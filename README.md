@@ -32,7 +32,7 @@ The application will be available at http://localhost and provides:
 
 # Trained model
 
-The pretrained model "The trained model enhanced_ensemble_model.pkl" can be used directly is available for direct usage
+The pretrained model "The trained model enhanced_ensemble_model.pkl" can be used directly. Otherwise the model can be retrained using the uploaded libraries.
 
 # Repository Structure
 CD28-project/
