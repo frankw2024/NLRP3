@@ -80,11 +80,17 @@ CPU: 8+ cores for parallel processing
 
 # Required CSV Files
   library.csv
+  
     Columns: ID, Smiles
+    
       Contains molecular library with SMILES strings
+      
   positives.csv
+  
     Columns: ID
+    
       Contains IDs of positive samples for binary classification
+      
 # Data Format
 SMILES: Valid chemical SMILES notation
 IDs: Unique identifiers matching between files
