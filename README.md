@@ -92,3 +92,5 @@ OS: Cross-platform (Windows, macOS, Linux)
 Python: Tested on 3.7, 3.8, 3.9, 3.10
 CUDA: Optional, versions 11.0+ recommended
 Memory: Scalable based on available resources
+
+# the pretrained model "The trained model enhanced_ensemble_model.pkl can be used directly" is available for direct usage
