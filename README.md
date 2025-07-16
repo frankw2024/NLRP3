@@ -25,7 +25,6 @@ Conda package manager
 CUDA-compatible GPU (recommended for transformer models)
 
 # Environment Setup
-
 1. Create and activate the conda environment:
 bashconda env create -f cd28_new.yml
 conda activate cd28_new
