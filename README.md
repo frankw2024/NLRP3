@@ -32,3 +32,63 @@ conda activate cd28_new
 2. Install additional training libraries:
 bash# Install libraries from the libraries file
 pip install -r libraries
+
+# Usage
+
+# Training the Model
+
+To train the HTS-Oracle ensemble model:
+
+python HTS.py
+
+This script will:
+  1. Load and preprocess molecular data (SMILES, activity data)
+  2. Generate ChemBERTa embeddings and cheminformatics features
+  3. Train the multi-modal ensemble model
+  4. Evaluate model performance and save trained weights
+
+# Running the Web Application
+To launch the Streamlit prediction interface:
+
+  streamlit run HTSOracle.py
+
+The application will be available at http://localhost:8501 and provides:
+
+  - Molecular activity prediction from SMILES input
+  - Batch prediction capabilities
+  - Model confidence scores
+  - Visualization of chemical space and predictions
+
+
+# Hardware Requirements
+
+# Minimum Requirements
+RAM: 8GB minimum (16GB recommended)
+Storage: 5GB free space for models and data
+CPU: Multi-core processor (4+ cores recommended)
+
+# Recommended Requirements
+RAM: 16GB or more
+GPU: NVIDIA GPU with 8GB+ VRAM (for CUDA acceleration)
+Storage: 10GB+ free space
+CPU: 8+ cores for parallel processing
+
+# Input Data Requirements
+
+# Required CSV Files
+  library.csv
+    Columns: ID, Smiles
+      Contains molecular library with SMILES strings
+  positives.csv
+    Columns: ID
+      Contains IDs of positive samples for binary classification
+# Data Format
+SMILES: Valid chemical SMILES notation
+IDs: Unique identifiers matching between files
+Encoding: UTF-8 recommended
+
+# Compatibility Notes
+OS: Cross-platform (Windows, macOS, Linux)
+Python: Tested on 3.7, 3.8, 3.9, 3.10
+CUDA: Optional, versions 11.0+ recommended
+Memory: Scalable based on available resources
