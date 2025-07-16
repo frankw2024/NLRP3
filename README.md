@@ -4,6 +4,36 @@ A deep learning, multi-modal ensemble framework for molecular activity predictio
 Despite rapid advances in in silico drug discovery approaches, high throughput screening (HTS) assays remain the key methodology for obtaining initial hit molecules, especially for novel targets that have been considered undruggable. However, traditional HTS campaigns typically yield low hit rates of just 1–2%, making them costly and time-consuming endeavors.
 HTS-Oracle addresses these challenges by integrating transformer-based chemical language models (ChemBERTa) with traditional cheminformatics features using an advanced ensemble learning strategy. This approach significantly improves hit rates while maximizing the value of negative HTS results that are typically discarded.
 
+# Usage
+
+# Training the Model
+
+To train the HTS-Oracle ensemble model:
+
+python HTS.py
+
+This script will:
+  1. Load and preprocess molecular data (SMILES, activity data)
+  2. Generate ChemBERTa embeddings and cheminformatics features
+  3. Train the multi-modal ensemble model
+  4. Evaluate model performance and save trained weights
+
+# Running the Web Application
+To launch the Streamlit prediction interface:
+
+  streamlit run HTSOracle.py
+
+The application will be available at http://localhost and provides:
+
+  - Molecular activity prediction from SMILES input
+  - Batch prediction capabilities
+  - Model confidence scores
+  - Visualization of chemical space and predictions
+
+# Trained model
+
+The pretrained model "The trained model enhanced_ensemble_model.pkl" can be used directly is available for direct usage
+
 # Repository Structure
 CD28-project/
 
@@ -32,33 +62,6 @@ conda activate cd28_new
 2. Install additional training libraries:
 bash# Install libraries from the libraries file
 pip install -r libraries
-
-# Usage
-
-# Training the Model
-
-To train the HTS-Oracle ensemble model:
-
-python HTS.py
-
-This script will:
-  1. Load and preprocess molecular data (SMILES, activity data)
-  2. Generate ChemBERTa embeddings and cheminformatics features
-  3. Train the multi-modal ensemble model
-  4. Evaluate model performance and save trained weights
-
-# Running the Web Application
-To launch the Streamlit prediction interface:
-
-  streamlit run HTSOracle.py
-
-The application will be available at http://localhost:8501 and provides:
-
-  - Molecular activity prediction from SMILES input
-  - Batch prediction capabilities
-  - Model confidence scores
-  - Visualization of chemical space and predictions
-
 
 # Hardware Requirements
 
@@ -93,4 +96,4 @@ Python: Tested on 3.7, 3.8, 3.9, 3.10
 CUDA: Optional, versions 11.0+ recommended
 Memory: Scalable based on available resources
 
-the pretrained model "The trained model enhanced_ensemble_model.pkl" can be used directly is available for direct usage
+
