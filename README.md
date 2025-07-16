@@ -16,3 +16,20 @@ CD28-project/
 ├── cd28_new.yml         # Conda environment configuration
 
 └── README.md            # This file
+
+# Installation
+
+# Prerequisites
+Python 3.8 or higher
+Conda package manager
+CUDA-compatible GPU (recommended for transformer models)
+
+# Environment Setup
+
+1. Create and activate the conda environment:
+bashconda env create -f cd28_new.yml
+conda activate cd28_new
+
+2. Install additional training libraries:
+bash# Install libraries from the libraries file
+pip install -r libraries
