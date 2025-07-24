@@ -102,4 +102,6 @@ Python: Tested on 3.7, 3.8, 3.9, 3.10
 CUDA: Optional, versions 11.0+ recommended
 Memory: Scalable based on available resources
 
-
+# Contact Us
+Dr. Hossam Nada: hoh4004@med.cornell.edu
+Professor Moustafa Gabr: mog4005@med.cornell.edu
