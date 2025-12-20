@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import joblib
+from pathlib import Path
 from rdkit import Chem
 from rdkit.Chem import AllChem, MACCSkeys, Descriptors, Lipinski, QED
 from rdkit.Chem import GetSSSR
@@ -20,6 +21,10 @@ from rdkit import RDLogger
 import warnings
 import sys
 import traceback
+
+# Get script directory and project root
+SCRIPT_DIR = Path(__file__).parent.resolve()
+PROJECT_ROOT = SCRIPT_DIR.parent.resolve()
 
 # Suppress warnings
 RDLogger.DisableLog('rdApp.*')  # Suppress RDKit warnings
@@ -69,9 +74,11 @@ def safe_metric(metric_fn, y_true, y_pred, fallback_value=0.0, **kwargs):
 # Load data
 print("Loading data...")
 try:
-    library_df = pd.read_csv('library.csv')
-    positives_df = pd.read_csv('positives.csv')
-    library_df['label'] = library_df['ID'].isin(positives_df['ID']).astype(int)
+    library_df = pd.read_csv(PROJECT_ROOT / 'libraries' / 'library.csv')
+    positives_df = pd.read_csv(PROJECT_ROOT / 'libraries' / 'positives.csv')
+    
+    # Create labels based on whether SMILES is in positives
+    library_df['label'] = library_df['Smiles'].isin(positives_df['Smiles']).astype(int)
     
     # Extract SMILES and labels
     smiles_list = library_df['Smiles'].tolist()
@@ -986,12 +993,12 @@ try:
         'predictions': final_predictions,
         'method_predictions': all_predictions
     }
-    joblib.dump(ensemble_data, "enhanced_ensemble_model.pkl")
+    joblib.dump(ensemble_data, PROJECT_ROOT / "enhanced_ensemble_model.pkl")
     print("✅ Saved 'enhanced_ensemble_model.pkl' with combined predictions from all methods and folds.")
 except Exception as e:
     print(f"Error saving ensemble model: {str(e)}")
     # Save predictions in a simpler format as backup
-    np.save("final_predictions.npy", final_predictions)
+    np.save(PROJECT_ROOT / "final_predictions.npy", final_predictions)
     print("✅ Saved backup predictions to 'final_predictions.npy'")
 
 # Independent evaluation of the performance on the entire dataset
@@ -1044,7 +1051,7 @@ for method_idx, method in enumerate(feature_selection_methods):
 # Create a prediction data frame with scores
 try:
     results_df = pd.DataFrame({
-        'ID': library_df['ID'],
+        'ID': range(len(library_df)),  # Create sequential IDs
         'SMILES': library_df['Smiles'],
         'True_Label': library_df['label'],
         'Prediction_Score': final_predictions,
@@ -1052,12 +1059,12 @@ try:
     })
 
     # Save predictions to CSV
-    results_df.to_csv('molecular_predictions.csv', index=False)
+    results_df.to_csv(PROJECT_ROOT / 'molecular_predictions.csv', index=False)
     print("✅ Saved predictions to 'molecular_predictions.csv'")
 except Exception as e:
     print(f"Error creating results dataframe: {str(e)}")
     # Save as numpy arrays as backup
-    np.save("ids.npy", library_df['ID'].values)
+    np.save("ids.npy", np.arange(len(library_df)))  # Save sequential IDs
     np.save("predictions.npy", final_predictions)
     print("✅ Saved backup arrays 'ids.npy' and 'predictions.npy'")
 

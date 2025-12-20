@@ -1,0 +1,294 @@
+{
+  "system_info": {
+    "device_type": "cuda",
+    "device_name": "NVIDIA GeForce RTX 4090",
+    "cuda_version": "12.4",
+    "cudnn_version": 90100,
+    "cpu_count": 28,
+    "total_ram_gb": 63.77,
+    "gpu_memory_gb": 23.99
+  },
+  "training_summary": {
+    "total_training_time_seconds": 27.19,
+    "total_training_time_minutes": 0.45,
+    "total_training_time_hours": 0.01,
+    "best_overall_auc": 0.9692,
+    "num_folds": 3,
+    "final_memory_usage": {
+      "cpu_ram_used_gb": 33.45,
+      "cpu_ram_percent": 52.4,
+      "gpu_memory_allocated_gb": 0.72,
+      "gpu_memory_reserved_gb": 1.19,
+      "gpu_memory_percent": 3.01
+    }
+  },
+  "fold_histories": [
+    {
+      "train_loss": [
+        0.6177114028679697,
+        0.5282909054505197,
+        0.426572480484059,
+        0.3404333160111779,
+        0.3239340656682065,
+        0.28957770882468475
+      ],
+      "val_auc": [
+        0.87386586016723,
+        0.9311510407400818,
+        0.9384451165273084,
+        0.9416473937021882,
+        0.9327521793275217,
+        0.9432485322896281
+      ],
+      "val_ap": [
+        0.8827582493127895,
+        0.940774129315326,
+        0.9480812096651072,
+        0.9483565035797642,
+        0.9497477766440893,
+        0.9507230318534268
+      ],
+      "train_time_seconds": [
+        1.6749272346496582,
+        1.2584028244018555,
+        1.2483417987823486,
+        1.2305371761322021,
+        1.2427549362182617,
+        1.2422852516174316
+      ],
+      "eval_time_seconds": [
+        0.11619997024536133,
+        0.11606001853942871,
+        0.11509299278259277,
+        0.11352825164794922,
+        0.11775064468383789,
+        0.11752676963806152
+      ],
+      "memory_usage": [
+        {
+          "cpu_ram_used_gb": 33.4,
+          "cpu_ram_percent": 52.4,
+          "gpu_memory_allocated_gb": 0.71,
+          "gpu_memory_reserved_gb": 1.0,
+          "gpu_memory_percent": 2.98
+        },
+        {
+          "cpu_ram_used_gb": 33.43,
+          "cpu_ram_percent": 52.4,
+          "gpu_memory_allocated_gb": 0.71,
+          "gpu_memory_reserved_gb": 1.0,
+          "gpu_memory_percent": 2.98
+        },
+        {
+          "cpu_ram_used_gb": 33.42,
+          "cpu_ram_percent": 52.4,
+          "gpu_memory_allocated_gb": 0.71,
+          "gpu_memory_reserved_gb": 1.0,
+          "gpu_memory_percent": 2.98
+        },
+        {
+          "cpu_ram_used_gb": 33.42,
+          "cpu_ram_percent": 52.4,
+          "gpu_memory_allocated_gb": 0.71,
+          "gpu_memory_reserved_gb": 1.0,
+          "gpu_memory_percent": 2.98
+        },
+        {
+          "cpu_ram_used_gb": 33.41,
+          "cpu_ram_percent": 52.4,
+          "gpu_memory_allocated_gb": 0.71,
+          "gpu_memory_reserved_gb": 1.0,
+          "gpu_memory_percent": 2.98
+        },
+        {
+          "cpu_ram_used_gb": 33.4,
+          "cpu_ram_percent": 52.4,
+          "gpu_memory_allocated_gb": 0.71,
+          "gpu_memory_reserved_gb": 1.0,
+          "gpu_memory_percent": 2.98
+        }
+      ],
+      "fold_total_time_seconds": 8.605411767959595,
+      "fold_best_auc": 0.9432485322896281,
+      "fold_best_epoch": 6
+    },
+    {
+      "train_loss": [
+        0.6537907860781017,
+        0.5532295939169432,
+        0.45268981080306203,
+        0.36285529560164403,
+        0.3176202726991553,
+        0.2904196052174819
+      ],
+      "val_auc": [
+        0.8221153846153846,
+        0.9375000000000001,
+        0.9551282051282052,
+        0.9362535612535612,
+        0.9387464387464388,
+        0.9289529914529915
+      ],
+      "val_ap": [
+        0.875363065164506,
+        0.945095225366551,
+        0.9587430656415878,
+        0.9480095379292436,
+        0.9494884288007426,
+        0.9358839269174233
+      ],
+      "train_time_seconds": [
+        1.277491807937622,
+        1.2683939933776855,
+        1.2672417163848877,
+        1.2645995616912842,
+        1.268874168395996,
+        1.2711942195892334
+      ],
+      "eval_time_seconds": [
+        0.11353230476379395,
+        0.12652850151062012,
+        0.11652970314025879,
+        0.11406874656677246,
+        0.11416387557983398,
+        0.1175382137298584
+      ],
+      "memory_usage": [
+        {
+          "cpu_ram_used_gb": 33.43,
+          "cpu_ram_percent": 52.4,
+          "gpu_memory_allocated_gb": 0.89,
+          "gpu_memory_reserved_gb": 1.19,
+          "gpu_memory_percent": 3.71
+        },
+        {
+          "cpu_ram_used_gb": 33.43,
+          "cpu_ram_percent": 52.4,
+          "gpu_memory_allocated_gb": 0.89,
+          "gpu_memory_reserved_gb": 1.19,
+          "gpu_memory_percent": 3.71
+        },
+        {
+          "cpu_ram_used_gb": 33.39,
+          "cpu_ram_percent": 52.4,
+          "gpu_memory_allocated_gb": 0.89,
+          "gpu_memory_reserved_gb": 1.19,
+          "gpu_memory_percent": 3.71
+        },
+        {
+          "cpu_ram_used_gb": 33.39,
+          "cpu_ram_percent": 52.4,
+          "gpu_memory_allocated_gb": 0.72,
+          "gpu_memory_reserved_gb": 1.19,
+          "gpu_memory_percent": 3.0
+        },
+        {
+          "cpu_ram_used_gb": 33.39,
+          "cpu_ram_percent": 52.4,
+          "gpu_memory_allocated_gb": 0.72,
+          "gpu_memory_reserved_gb": 1.19,
+          "gpu_memory_percent": 3.0
+        },
+        {
+          "cpu_ram_used_gb": 33.38,
+          "cpu_ram_percent": 52.3,
+          "gpu_memory_allocated_gb": 0.72,
+          "gpu_memory_reserved_gb": 1.19,
+          "gpu_memory_percent": 3.0
+        }
+      ],
+      "fold_total_time_seconds": 8.331663131713867,
+      "fold_best_auc": 0.9551282051282052,
+      "fold_best_epoch": 3
+    },
+    {
+      "train_loss": [
+        0.6164211740619258,
+        0.5470535488505113,
+        0.47099537755313675,
+        0.3800677084609082,
+        0.3365057099022363,
+        0.3142853755699961
+      ],
+      "val_auc": [
+        0.8111471861471861,
+        0.9505772005772005,
+        0.9630230880230881,
+        0.963924963924964,
+        0.9482323232323232,
+        0.9691558441558442
+      ],
+      "val_ap": [
+        0.7716621176973621,
+        0.9407962231086114,
+        0.9641380540061356,
+        0.9602471426768081,
+        0.9515617979428098,
+        0.9577347137574841
+      ],
+      "train_time_seconds": [
+        1.2472944259643555,
+        1.2495150566101074,
+        1.3117241859436035,
+        1.250504970550537,
+        1.5038833618164062,
+        1.4739484786987305
+      ],
+      "eval_time_seconds": [
+        0.11553573608398438,
+        0.11827969551086426,
+        0.11554598808288574,
+        0.11952638626098633,
+        0.12140250205993652,
+        0.11853432655334473
+      ],
+      "memory_usage": [
+        {
+          "cpu_ram_used_gb": 33.38,
+          "cpu_ram_percent": 52.3,
+          "gpu_memory_allocated_gb": 0.89,
+          "gpu_memory_reserved_gb": 1.19,
+          "gpu_memory_percent": 3.73
+        },
+        {
+          "cpu_ram_used_gb": 33.38,
+          "cpu_ram_percent": 52.3,
+          "gpu_memory_allocated_gb": 0.89,
+          "gpu_memory_reserved_gb": 1.19,
+          "gpu_memory_percent": 3.73
+        },
+        {
+          "cpu_ram_used_gb": 33.43,
+          "cpu_ram_percent": 52.4,
+          "gpu_memory_allocated_gb": 0.89,
+          "gpu_memory_reserved_gb": 1.19,
+          "gpu_memory_percent": 3.73
+        },
+        {
+          "cpu_ram_used_gb": 33.42,
+          "cpu_ram_percent": 52.4,
+          "gpu_memory_allocated_gb": 0.72,
+          "gpu_memory_reserved_gb": 1.19,
+          "gpu_memory_percent": 3.01
+        },
+        {
+          "cpu_ram_used_gb": 33.47,
+          "cpu_ram_percent": 52.5,
+          "gpu_memory_allocated_gb": 0.72,
+          "gpu_memory_reserved_gb": 1.19,
+          "gpu_memory_percent": 3.01
+        },
+        {
+          "cpu_ram_used_gb": 33.47,
+          "cpu_ram_percent": 52.5,
+          "gpu_memory_allocated_gb": 0.72,
+          "gpu_memory_reserved_gb": 1.19,
+          "gpu_memory_percent": 3.01
+        }
+      ],
+      "fold_total_time_seconds": 8.755727291107178,
+      "fold_best_auc": 0.9691558441558442,
+      "fold_best_epoch": 6
+    }
+  ]
+}

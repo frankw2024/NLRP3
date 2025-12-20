@@ -9,7 +9,12 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import os
 import tempfile
+from pathlib import Path
 from rdkit import Chem
+
+# Get script directory and project root
+SCRIPT_DIR = Path(__file__).parent.resolve()
+PROJECT_ROOT = SCRIPT_DIR.parent.resolve()
 from rdkit.Chem import AllChem, MACCSkeys, Descriptors, Lipinski, QED
 from rdkit.Chem import GetSSSR
 from sklearn.metrics import roc_auc_score, average_precision_score
@@ -673,9 +678,11 @@ def run_app():
         )
         
         # Model selection
+        # Default model path in project root (where HTS.py saves it)
+        default_model_path = str(PROJECT_ROOT / "enhanced_ensemble_model.pkl")
         model_path = st.text_input(
             "Path to ensemble model", 
-            value="enhanced_ensemble_model.pkl",
+            value=default_model_path,
             help="Path to the trained ensemble model file (.pkl)"
         )
     
