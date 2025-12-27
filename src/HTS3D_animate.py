@@ -11,8 +11,23 @@ Scenes (5s each):
   6) Ensemble prediction (3 models -> ensemble score)
   7) Output ranking (bars sort; top hits highlight)
 
+GPU Acceleration:
+  This script uses GPU acceleration when CuPy is available. All numerical computations
+  (array operations, trigonometric functions, matrix multiplications) run on GPU.
+  Data is automatically transferred to CPU only when needed for matplotlib rendering
+  or RDKit operations (which require CPU).
+  
+  To enable GPU acceleration:
+    pip install cupy-cuda11x  # For CUDA 11.x
+    # or
+    pip install cupy-cuda12x  # For CUDA 12.x
+  
+  The script will automatically detect and use GPU if available, falling back to CPU
+  (NumPy) if CuPy is not installed or no GPU is available.
+
 Install deps:
   pip install matplotlib numpy imageio imageio-ffmpeg
+  For GPU acceleration: pip install cupy-cuda11x (or cupy-cuda12x depending on CUDA version)
 
 Run:
   python hts3d_explainer.py
@@ -23,6 +38,81 @@ import numpy as np
 import warnings
 import os
 import sys
+
+# Device detection following HTS_3D.py pattern
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
+
+def detect_device():
+    """
+    Detect available device (CUDA, MPS, or CPU) following HTS_3D.py pattern.
+    Returns device type string.
+    """
+    if HAS_TORCH:
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+            device_name = torch.cuda.get_device_name(device)
+            print(f"[device] Using CUDA GPU: {device_name}")
+            return "cuda"
+        if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+            print("[device] Using Apple MPS backend")
+            return "mps"
+    
+    print("[device] Using CPU")
+    return "cpu"
+
+# Detect device
+DEVICE_TYPE = detect_device()
+
+# GPU support: Try to import CuPy for GPU acceleration (works with CUDA)
+# Note: CuPy only works with CUDA, not MPS
+USE_GPU = False
+xp = np  # Default to NumPy
+cp = None
+
+if DEVICE_TYPE == "cuda":
+    # Try to use CuPy for GPU-accelerated NumPy operations
+    try:
+        import cupy as cp
+        # Verify CUDA is actually available in CuPy
+        if cp.cuda.runtime.getDeviceCount() > 0:
+            USE_GPU = True
+            xp = cp  # Use CuPy for GPU arrays
+            device_name = cp.cuda.runtime.getDeviceProperties(0)['name'].decode()
+            print(f"[device] CuPy GPU acceleration enabled: {device_name}")
+        else:
+            print("[device] CuPy available but no CUDA devices found, using CPU (NumPy)")
+    except ImportError:
+        print("[device] CuPy not available. Install for GPU acceleration: pip install cupy-cuda11x")
+    except Exception as e:
+        print(f"[device] CuPy initialization failed: {e}, using CPU (NumPy)")
+elif DEVICE_TYPE == "mps":
+    # MPS (Apple Silicon) detected, but CuPy doesn't support MPS
+    print("[device] MPS detected but CuPy doesn't support MPS, using CPU (NumPy)")
+
+# Helper function to convert GPU arrays to CPU (NumPy) arrays for matplotlib/RDKit
+def to_cpu(arr):
+    """Convert array to CPU (NumPy) format."""
+    if USE_GPU and hasattr(arr, 'get'):  # CuPy array
+        return arr.get()
+    return arr
+
+# Helper function to convert CPU arrays to GPU if available
+def to_gpu(arr):
+    """Convert array to GPU (CuPy) format if available."""
+    if USE_GPU and cp is not None:
+        return cp.asarray(arr)
+    return arr
+
+# Constants for GPU compatibility
+if USE_GPU:
+    PI = xp.pi
+else:
+    PI = np.pi
+
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend for rendering
 import matplotlib.pyplot as plt
@@ -131,8 +221,11 @@ def lerp(a, b, t):
 
 
 def smoothstep(t):
-    t = np.clip(t, 0, 1)
-    return t * t * (3 - 2 * t)
+    """Smoothstep function with GPU support."""
+    t_arr = to_gpu(xp.asarray(t)) if USE_GPU else xp.asarray(t)
+    t_clipped = xp.clip(t_arr, 0, 1)
+    result = t_clipped * t_clipped * (3 - 2 * t_clipped)
+    return to_cpu(result) if USE_GPU and not isinstance(t, (list, tuple)) else float(result)
 
 
 def scene_of_frame(f):
@@ -363,12 +456,22 @@ def render_frame(fig):
 # Enhanced 3D Ball-and-Stick Rendering Functions
 # -----------------------------
 def project_3d_to_2d(x, y, z, view_angle_x=0.5, view_angle_y=0.3):
-    """Project 3D coordinates to 2D with perspective."""
-    # Simple perspective projection
-    scale = 1.0 / (1.0 + z * 0.3)  # Perspective scaling
-    x_proj = x * np.cos(view_angle_y) - z * np.sin(view_angle_y)
-    y_proj = y * np.cos(view_angle_x) + z * np.sin(view_angle_x) * np.cos(view_angle_y)
-    return x_proj * scale, y_proj * scale
+    """Project 3D coordinates to 2D with perspective (GPU-accelerated)."""
+    # Convert to GPU arrays if available
+    if USE_GPU and (hasattr(x, '__len__') or hasattr(y, '__len__') or hasattr(z, '__len__')):
+        x = to_gpu(xp.asarray(x))
+        y = to_gpu(xp.asarray(y))
+        z = to_gpu(xp.asarray(z))
+        scale = 1.0 / (1.0 + z * 0.3)  # Perspective scaling
+        x_proj = x * xp.cos(view_angle_y) - z * xp.sin(view_angle_y)
+        y_proj = y * xp.cos(view_angle_x) + z * xp.sin(view_angle_x) * xp.cos(view_angle_y)
+        return to_cpu(x_proj * scale), to_cpu(y_proj * scale)
+    else:
+        # Scalar or small array case - use NumPy for simplicity
+        scale = 1.0 / (1.0 + z * 0.3)
+        x_proj = x * np.cos(view_angle_y) - z * np.sin(view_angle_y)
+        y_proj = y * np.cos(view_angle_x) + z * np.sin(view_angle_x) * np.cos(view_angle_y)
+        return x_proj * scale, y_proj * scale
 
 
 def draw_ball_and_stick_3d(ax, cx, cy, atoms_3d, bonds, atom_colors=None, 
@@ -561,22 +664,25 @@ def draw_molecule_2d(ax, cx, cy, r, morph, smiles_pattern="benzene"):
 
 
 def draw_double_helix(ax, px, py, rot, alpha_val=0.3, helix_length=0.25):
-    """Draw a DNA-like double helix structure."""
+    """Draw a DNA-like double helix structure (GPU-accelerated)."""
     # Parameters for the double helix
     n_turns = 2.5
     n_points = 100
     helix_radius = 0.08
     
-    # Generate helix parameters
-    t_helix = np.linspace(0, n_turns * 2 * np.pi, n_points)
+    # Generate helix parameters on GPU if available
+    t_helix = xp.linspace(0, n_turns * 2 * PI, n_points)
     
-    # First strand (right-handed)
-    x1 = px + helix_radius * np.cos(t_helix + rot)
-    y1 = py + helix_radius * np.sin(t_helix + rot) + (t_helix - n_turns * np.pi) * helix_length / (n_turns * 2 * np.pi)
+    # First strand (right-handed) - compute on GPU
+    x1 = px + helix_radius * xp.cos(t_helix + rot)
+    y1 = py + helix_radius * xp.sin(t_helix + rot) + (t_helix - n_turns * xp.pi) * helix_length / (n_turns * 2 * xp.pi)
     
     # Second strand (left-handed, offset by pi)
-    x2 = px + helix_radius * np.cos(t_helix + rot + np.pi)
-    y2 = py + helix_radius * np.sin(t_helix + rot + np.pi) + (t_helix - n_turns * np.pi) * helix_length / (n_turns * 2 * np.pi)
+    x2 = px + helix_radius * xp.cos(t_helix + rot + PI)
+    y2 = py + helix_radius * xp.sin(t_helix + rot + PI) + (t_helix - n_turns * PI) * helix_length / (n_turns * 2 * PI)
+    
+    # Convert to CPU for matplotlib
+    x1, y1, x2, y2, t_helix = to_cpu(x1), to_cpu(y1), to_cpu(x2), to_cpu(y2), to_cpu(t_helix)
     
     # Draw the two strands
     ax.plot(x1, y1, color=(0.5, 0.7, 0.95), alpha=alpha_val, lw=3.0, zorder=2)
@@ -603,16 +709,19 @@ def draw_double_helix(ax, px, py, rot, alpha_val=0.3, helix_length=0.25):
 
 
 def draw_protein_structure(ax, px, py, rot, alpha_val=0.3):
-    """Draw a more realistic protein structure with double helix."""
+    """Draw a more realistic protein structure with double helix (GPU-accelerated)."""
     # Draw double helix as the main structure
     draw_double_helix(ax, px, py, rot, alpha_val=alpha_val, helix_length=0.25)
     
-    # Add some surrounding protein context (simplified)
+    # Add some surrounding protein context (simplified) - compute on GPU
     # Draw a subtle background shape to suggest protein environment
-    blob_t = np.linspace(0, 2 * np.pi, 200)
-    blob_r = 0.15 + 0.02 * np.sin(3 * blob_t) + 0.015 * np.cos(5 * blob_t)
-    bx = px + blob_r * np.cos(blob_t + rot * 0.05)
-    by = py + blob_r * np.sin(blob_t + rot * 0.05)
+    blob_t = xp.linspace(0, 2 * PI, 200)
+    blob_r = 0.15 + 0.02 * xp.sin(3 * blob_t) + 0.015 * xp.cos(5 * blob_t)
+    bx = px + blob_r * xp.cos(blob_t + rot * 0.05)
+    by = py + blob_r * xp.sin(blob_t + rot * 0.05)
+    
+    # Convert to CPU for matplotlib
+    bx, by = to_cpu(bx), to_cpu(by)
     ax.fill(bx, by, color=(0.25, 0.5, 0.85), alpha=alpha_val * 0.2, zorder=0)
 
 
@@ -642,7 +751,9 @@ def scene1(ax, t):
 
     # More realistic protein structure
     px, py = 0.75, 0.55
-    rot = 2 * np.pi * t * 0.3  # Slower rotation
+    rot = 2 * PI * t * 0.3  # Slower rotation
+    if USE_GPU:
+        rot = float(to_cpu(xp.asarray(rot)))  # Convert to Python float
     draw_protein_structure(ax, px, py, rot, alpha_val=0.4)
 
     ax.text(0.67, 0.80, "Protein Structure", color=(0.75, 0.78, 0.85), fontsize=12)
@@ -655,38 +766,44 @@ def scene1(ax, t):
 # Scene 2: Ligand Encoding (2D + 3D)
 # -----------------------------
 def draw_3d_conformer(ax, cx, cy, theta, phi=0.3):
-    """Draw a realistic 3D ball-and-stick molecular conformer."""
+    """Draw a realistic 3D ball-and-stick molecular conformer (GPU-accelerated)."""
     # Create a more complex 3D structure (aromatic ring with substituents)
     ring_radius = 0.06
     n_ring = 6
     
-    # Ring atoms in 3D
-    atoms_3d = []
-    atom_colors = []
-    for i in range(n_ring):
-        angle = 2 * np.pi * i / n_ring
-        x_3d = ring_radius * np.cos(angle)
-        y_3d = ring_radius * np.sin(angle)
-        z_3d = 0.02 * np.sin(angle * 2)  # Slight puckering
-        atoms_3d.append([x_3d, y_3d, z_3d])
-        atom_colors.append((0.5, 0.5, 0.5))  # Carbon (gray)
+    # Ring atoms in 3D - compute on GPU if available
+    angles = xp.linspace(0, 2 * PI * (n_ring - 1) / n_ring, n_ring)
+    x_3d = ring_radius * xp.cos(angles)
+    y_3d = ring_radius * xp.sin(angles)
+    z_3d = 0.02 * xp.sin(angles * 2)  # Slight puckering
+    
+    # Stack into array and convert to CPU for processing
+    ring_atoms = xp.stack([x_3d, y_3d, z_3d], axis=1)
     
     # Add substituent atoms
-    sub_atoms = [
+    sub_atoms = xp.array([
         [ring_radius * 1.3, 0, 0.03],  # Right substituent
         [0, ring_radius * 1.2, -0.02],  # Top substituent
-    ]
-    atoms_3d.extend(sub_atoms)
-    atom_colors.extend([(0.9, 0.9, 0.95), (0.8, 0.9, 0.95)])  # Different colors
+    ])
     
-    # Rotate around Y and Z axes
-    rot_y = np.array([[np.cos(theta), 0, np.sin(theta)],
+    atoms_3d = xp.vstack([ring_atoms, sub_atoms])
+    atom_colors = [(0.5, 0.5, 0.5)] * n_ring + [(0.9, 0.9, 0.95), (0.8, 0.9, 0.95)]
+    
+    # Rotate around Y and Z axes - compute on GPU
+    rot_y = xp.array([[xp.cos(theta), 0, xp.sin(theta)],
                       [0, 1, 0],
-                      [-np.sin(theta), 0, np.cos(theta)]])
-    rot_z = np.array([[np.cos(phi), -np.sin(phi), 0],
-                      [np.sin(phi), np.cos(phi), 0],
+                      [-xp.sin(theta), 0, xp.cos(theta)]])
+    rot_z = xp.array([[xp.cos(phi), -xp.sin(phi), 0],
+                      [xp.sin(phi), xp.cos(phi), 0],
                       [0, 0, 1]])
-    atoms_3d = np.array(atoms_3d) @ rot_y.T @ rot_z.T
+    atoms_3d = atoms_3d @ rot_y.T @ rot_z.T
+    
+    # Convert to CPU for drawing (convert to numpy array, then to list)
+    atoms_3d_cpu = to_cpu(atoms_3d)
+    if isinstance(atoms_3d_cpu, np.ndarray):
+        atoms_3d = atoms_3d_cpu.tolist()
+    else:
+        atoms_3d = atoms_3d_cpu
     
     # Define bonds
     bonds = []
@@ -698,7 +815,7 @@ def draw_3d_conformer(ax, cx, cy, theta, phi=0.3):
     bonds.append((2, n_ring + 1))  # Second substituent
     
     # Draw using ball-and-stick style
-    draw_ball_and_stick_3d(ax, cx, cy, atoms_3d.tolist(), bonds, 
+    draw_ball_and_stick_3d(ax, cx, cy, atoms_3d, bonds, 
                           atom_colors=atom_colors,
                           bond_color=(0.7, 0.8, 0.9),
                           view_angle_x=0.4, view_angle_y=0.3,
@@ -926,7 +1043,7 @@ def draw_residue(ax, x, y, res_type, size=25):
 
 
 def draw_3d_protein_pocket_matching(ax, cx, cy, t, scale=1.0):
-    """Draw detailed 3D protein pocket matching diagram with ligand inside.
+    """Draw detailed 3D protein pocket matching diagram with ligand inside (GPU-accelerated).
     
     Enhanced with realistic 3D depth, shadows, and multi-layer visualization.
     
@@ -939,7 +1056,9 @@ def draw_3d_protein_pocket_matching(ax, cx, cy, t, scale=1.0):
     - Realistic shadows and depth gradients
     """
     # Rotate for 3D effect
-    rot = 2 * np.pi * t * 0.15
+    rot = 2 * PI * t * 0.15
+    if USE_GPU:
+        rot = float(to_cpu(xp.asarray(rot)))
     
     # Add ground shadow for depth perception
     shadow_y = cy - 0.15 * scale
@@ -948,44 +1067,49 @@ def draw_3d_protein_pocket_matching(ax, cx, cy, t, scale=1.0):
                              facecolor=(0.05, 0.05, 0.08), alpha=0.4, zorder=0)
     ax.add_patch(shadow_ellipse)
     
-    # Draw protein surface with multiple layers for 3D depth
-    surface_angles = np.linspace(0, 2 * np.pi, 60)  # More points for smoother curve
+    # Draw protein surface with multiple layers for 3D depth - compute on GPU
+    surface_angles = xp.linspace(0, 2 * PI, 60)  # More points for smoother curve
     
     # Outer shell (back layer, darker)
     surface_r_outer = 0.15 * scale
-    surface_x_outer = cx + surface_r_outer * np.cos(surface_angles + rot)
-    surface_y_outer = cy + surface_r_outer * np.sin(surface_angles + rot) * 0.65  # More elliptical
+    surface_x_outer = cx + surface_r_outer * xp.cos(surface_angles + rot)
+    surface_y_outer = cy + surface_r_outer * xp.sin(surface_angles + rot) * 0.65  # More elliptical
+    surface_x_outer, surface_y_outer = to_cpu(surface_x_outer), to_cpu(surface_y_outer)
     ax.fill(surface_x_outer, surface_y_outer, color=(0.2, 0.35, 0.65), alpha=0.25, zorder=1)
     ax.plot(surface_x_outer, surface_y_outer, color=(0.3, 0.5, 0.75), lw=2.5, alpha=0.4, zorder=2)
     
     # Middle shell (intermediate layer)
     surface_r_mid = 0.13 * scale
-    surface_x_mid = cx + surface_r_mid * np.cos(surface_angles + rot)
-    surface_y_mid = cy + surface_r_mid * np.sin(surface_angles + rot) * 0.68
+    surface_x_mid = cx + surface_r_mid * xp.cos(surface_angles + rot)
+    surface_y_mid = cy + surface_r_mid * xp.sin(surface_angles + rot) * 0.68
+    surface_x_mid, surface_y_mid = to_cpu(surface_x_mid), to_cpu(surface_y_mid)
     ax.fill(surface_x_mid, surface_y_mid, color=(0.25, 0.45, 0.75), alpha=0.3, zorder=3)
     ax.plot(surface_x_mid, surface_y_mid, color=(0.35, 0.55, 0.85), lw=2.0, alpha=0.5, zorder=4)
     
     # Inner shell (front layer, brighter)
     surface_r = 0.12 * scale
-    surface_x = cx + surface_r * np.cos(surface_angles + rot)
-    surface_y = cy + surface_r * np.sin(surface_angles + rot) * 0.7
+    surface_x = cx + surface_r * xp.cos(surface_angles + rot)
+    surface_y = cy + surface_r * xp.sin(surface_angles + rot) * 0.7
+    surface_x, surface_y = to_cpu(surface_x), to_cpu(surface_y)
     ax.fill(surface_x, surface_y, color=(0.3, 0.5, 0.8), alpha=0.35, zorder=5)
     ax.plot(surface_x, surface_y, color=(0.4, 0.6, 0.9), lw=2.5, alpha=0.6, zorder=6)
     
     # Draw hydrophobic region (yellow, inner layer) with enhanced 3D depth
-    hydro_angles = np.linspace(0, 2 * np.pi, 40)
+    hydro_angles = xp.linspace(0, 2 * PI, 40)
     
-    # Outer hydrophobic ring (deeper, darker)
+    # Outer hydrophobic ring (deeper, darker) - compute on GPU
     hydro_r_outer = 0.10 * scale
-    hydro_x_outer = cx + hydro_r_outer * np.cos(hydro_angles + rot)
-    hydro_y_outer = cy + hydro_r_outer * np.sin(hydro_angles + rot) * 0.7
+    hydro_x_outer = cx + hydro_r_outer * xp.cos(hydro_angles + rot)
+    hydro_y_outer = cy + hydro_r_outer * xp.sin(hydro_angles + rot) * 0.7
+    hydro_x_outer, hydro_y_outer = to_cpu(hydro_x_outer), to_cpu(hydro_y_outer)
     ax.fill(hydro_x_outer, hydro_y_outer, color=(0.9, 0.75, 0.3), alpha=0.35, zorder=7)
     ax.plot(hydro_x_outer, hydro_y_outer, color=(0.95, 0.7, 0.25), lw=2.0, alpha=0.5, zorder=8)
     
     # Inner hydrophobic core (closer, brighter)
     hydro_r = 0.08 * scale
-    hydro_x = cx + hydro_r * np.cos(hydro_angles + rot)
-    hydro_y = cy + hydro_r * np.sin(hydro_angles + rot) * 0.7
+    hydro_x = cx + hydro_r * xp.cos(hydro_angles + rot)
+    hydro_y = cy + hydro_r * xp.sin(hydro_angles + rot) * 0.7
+    hydro_x, hydro_y = to_cpu(hydro_x), to_cpu(hydro_y)
     ax.fill(hydro_x, hydro_y, color=(0.95, 0.85, 0.4), alpha=0.5, zorder=9)
     ax.plot(hydro_x, hydro_y, color=(0.95, 0.75, 0.3), lw=2.5, alpha=0.7, zorder=10)
     
@@ -993,8 +1117,9 @@ def draw_3d_protein_pocket_matching(ax, cx, cy, t, scale=1.0):
     for i in range(3):
         grad_r = hydro_r + (hydro_r_outer - hydro_r) * (i + 1) / 4
         grad_alpha = 0.2 + 0.15 * (i / 2)
-        grad_x = cx + grad_r * np.cos(hydro_angles + rot)
-        grad_y = cy + grad_r * np.sin(hydro_angles + rot) * 0.7
+        grad_x = cx + grad_r * xp.cos(hydro_angles + rot)
+        grad_y = cy + grad_r * xp.sin(hydro_angles + rot) * 0.7
+        grad_x, grad_y = to_cpu(grad_x), to_cpu(grad_y)
         ax.plot(grad_x, grad_y, color=(0.95, 0.8, 0.35), lw=1.0, alpha=grad_alpha, zorder=8)
     
     # Draw ligand inside pocket (colored atoms) - use real RDKit 3D if available
@@ -1028,18 +1153,19 @@ def draw_3d_protein_pocket_matching(ax, cx, cy, t, scale=1.0):
                 ligand_bonds = [(bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()) 
                                for bond in mol_3d.GetBonds()]
                 
-                # Enhanced rotation for better 3D visualization
-                lig_rot_y = 2 * np.pi * t * 0.4
-                lig_rot_z = 2 * np.pi * t * 0.3
+                # Enhanced rotation for better 3D visualization - compute on GPU
+                lig_rot_y = 2 * PI * t * 0.4
+                lig_rot_z = 2 * PI * t * 0.3
                 
                 # Rotate around Y and Z axes for full 3D rotation
-                rot_y = np.array([[np.cos(lig_rot_y), 0, np.sin(lig_rot_y)],
+                ligand_atoms_3d_gpu = to_gpu(xp.array(ligand_atoms_3d))
+                rot_y = xp.array([[xp.cos(lig_rot_y), 0, xp.sin(lig_rot_y)],
                                   [0, 1, 0],
-                                  [-np.sin(lig_rot_y), 0, np.cos(lig_rot_y)]])
-                rot_z = np.array([[np.cos(lig_rot_z), -np.sin(lig_rot_z), 0],
-                                  [np.sin(lig_rot_z), np.cos(lig_rot_z), 0],
+                                  [-xp.sin(lig_rot_y), 0, xp.cos(lig_rot_y)]])
+                rot_z = xp.array([[xp.cos(lig_rot_z), -xp.sin(lig_rot_z), 0],
+                                  [xp.sin(lig_rot_z), xp.cos(lig_rot_z), 0],
                                   [0, 0, 1]])
-                ligand_atoms_3d = np.array(ligand_atoms_3d) @ rot_y.T @ rot_z.T
+                ligand_atoms_3d = to_cpu(ligand_atoms_3d_gpu @ rot_y.T @ rot_z.T)
                 
                 # Draw ligand in pocket with enhanced 3D rendering
                 draw_ball_and_stick_3d(ax, cx, cy, ligand_atoms_3d.tolist(), ligand_bonds,
@@ -1104,16 +1230,17 @@ def draw_3d_protein_pocket_matching(ax, cx, cy, t, scale=1.0):
         ligand_bonds = [(0, 1), (0, 2), (0, 3), (0, 4)]
         ligand_colors = [(0.4, 0.4, 0.4), (0.9, 0.2, 0.2), (0.2, 0.4, 0.9),
                         (0.4, 0.4, 0.4), (0.2, 0.8, 0.2)]
-        # Enhanced rotation for better 3D visualization
-        lig_rot_y = 2 * np.pi * t * 0.4
-        lig_rot_z = 2 * np.pi * t * 0.3
-        rot_y = np.array([[np.cos(lig_rot_y), 0, np.sin(lig_rot_y)],
+        # Enhanced rotation for better 3D visualization - compute on GPU
+        lig_rot_y = 2 * PI * t * 0.4
+        lig_rot_z = 2 * PI * t * 0.3
+        ligand_atoms_3d_gpu = to_gpu(xp.array(ligand_atoms_3d))
+        rot_y = xp.array([[xp.cos(lig_rot_y), 0, xp.sin(lig_rot_y)],
                           [0, 1, 0],
-                          [-np.sin(lig_rot_y), 0, np.cos(lig_rot_y)]])
-        rot_z = np.array([[np.cos(lig_rot_z), -np.sin(lig_rot_z), 0],
-                          [np.sin(lig_rot_z), np.cos(lig_rot_z), 0],
+                          [-xp.sin(lig_rot_y), 0, xp.cos(lig_rot_y)]])
+        rot_z = xp.array([[xp.cos(lig_rot_z), -xp.sin(lig_rot_z), 0],
+                          [xp.sin(lig_rot_z), xp.cos(lig_rot_z), 0],
                           [0, 0, 1]])
-        ligand_atoms_3d = np.array(ligand_atoms_3d) @ rot_y.T @ rot_z.T
+        ligand_atoms_3d = to_cpu(ligand_atoms_3d_gpu @ rot_y.T @ rot_z.T)
         draw_ball_and_stick_3d(ax, cx, cy, ligand_atoms_3d.tolist(), ligand_bonds,
                                atom_colors=ligand_colors,
                                bond_color=(0.6, 0.9, 0.85),
@@ -1270,15 +1397,17 @@ def scene4(ax, t):
     for i, (res_pos, res_type) in enumerate(zip(residues, residue_types)):
         draw_residue(ax, res_pos[0], res_pos[1], res_type, size=140)
 
-    # Attention beams (more realistic with varying intensities)
-    weights = np.zeros((len(ligand_atoms), len(residues)))
-    for i in range(len(ligand_atoms)):
-        for j in range(len(residues)):
-            # Create more realistic attention pattern (some strong, some weak)
-            base = 0.2 + 0.8 * (0.5 + 0.5 * np.sin(2*np.pi*(t*1.2 + (i*0.13 + j*0.09))))
-            # Add some structure (certain atoms prefer certain residues)
-            preference = 0.3 * np.sin((i - j) * 0.5)
-            weights[i, j] = np.clip(base + preference, 0, 1)
+    # Attention beams (more realistic with varying intensities) - GPU-accelerated
+    n_lig = len(ligand_atoms)
+    n_res = len(residues)
+    # Create meshgrid for vectorized computation on GPU
+    i_indices = xp.arange(n_lig)[:, xp.newaxis]
+    j_indices = xp.arange(n_res)[xp.newaxis, :]
+    # Compute weights using vectorized operations on GPU
+    base = 0.2 + 0.8 * (0.5 + 0.5 * xp.sin(2*PI*(t*1.2 + (i_indices*0.13 + j_indices*0.09))))
+    preference = 0.3 * xp.sin((i_indices - j_indices) * 0.5)
+    weights_gpu = xp.clip(base + preference, 0, 1)
+    weights = to_cpu(weights_gpu)
 
     # Draw top-2 edges per ligand atom with gradient effect
     for i in range(len(ligand_atoms)):
@@ -1923,6 +2052,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
-
     main()
