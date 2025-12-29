@@ -11,6 +11,13 @@ Scenes (5s each):
   6) Ensemble prediction (3 models -> ensemble score)
   7) Output ranking (bars sort; top hits highlight)
 
+Image Dependencies:
+  - Scene 0 (Inputs): Uses ligand image from HTS3D_ligandFigure.py (ligands/ligand_figure.png)
+  - Scene 2 (Multi-Branch Encoding): Uses ligand image from HTS3D_ligandFigure.py (ligands/ligand_figure.png)
+  - Scene 7 (2D to 3D): Uses ligand image from HTS3D_ligandFigure.py (ligands/ligand_figure.png) on left,
+                         and protein image from HTS3D_nlrp3Figure.py (nlrp3/panel_A_nlrp3_alone.png) on right
+  Run these scripts first to generate the required images before running the animation.
+
 GPU Acceleration:
   This script uses GPU acceleration when CuPy is available. All numerical computations
   (array operations, trigonometric functions, matrix multiplications) run on GPU.
@@ -38,6 +45,11 @@ import numpy as np
 import warnings
 import os
 import sys
+import argparse
+from pathlib import Path
+
+# Fix OpenMP error: OMP: Error #15: Initializing libiomp5md.dll, but found libiomp5md.dll already initialized.
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 # Device detection following HTS_3D.py pattern
 try:
@@ -116,6 +128,7 @@ else:
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend for rendering
 import matplotlib.pyplot as plt
+from matplotlib.transforms import Affine2D
 from mpl_toolkits.mplot3d import Axes3D
 import imageio.v2 as imageio
 from docx import Document
@@ -197,14 +210,18 @@ FPS = 10
 DURATION_S = 70  # Scene 3 (2D to 3D) is 18s, Scene 4 (Cross-Attention) is 7s, Scene 5 is 5s
 W, H = 1280, 720
 DPI = 100
-FRAMES = 700  # Scenes 0-2: 100 frames each, Scene 3: 180 frames, Scene 4: 70 frames, Scene 5: 50 frames, Scene 6: 100 frames
+# Default: 7 scenes (700 frames). With --include-scene8: 8 scenes (800 frames)
+# Scene order: 0=Inputs, 1=Multi-Branch, 2=Cross-Attention, 3=Ensemble, 4=Ranked, 5=2D-to-3D, 6=2D-to-3D-duplicate, 7=3D-Pocket-Matching (optional)
+FRAMES = 700  # Default: first 7 scenes only. Use --include-scene8 to generate all 8 scenes.
 
 SCENE_LEN_S = 10  # Doubled from 5 to match 2x slower animation
 SCENE_FRAMES = FPS * SCENE_LEN_S  # 100 frames/scene (doubled from 50)
 
 OUT_PATH = "hts3d_explainer.mp4"
-SUBTITLE_PATH = "src/codeGen/aniVsubtitle_generated.docx"
-#SUBTITLE_PATH = "src/codeGen/aniVsubtitle.docx"
+# Use path relative to script directory (same approach as ligand image path)
+SCRIPT_DIR = Path(__file__).parent
+SUBTITLE_PATH = str(SCRIPT_DIR / "codeGen" / "aniVsubtitle_generated.docx")
+#SUBTITLE_PATH = str(SCRIPT_DIR / "codeGen" / "aniVsubtitle.docx")
 
 BG = (0.05, 0.06, 0.08)  # dark background
 FG = (0.92, 0.94, 0.97)  # near-white text
@@ -228,55 +245,82 @@ def smoothstep(t):
     return to_cpu(result) if USE_GPU and not isinstance(t, (list, tuple)) else float(result)
 
 
-def scene_of_frame(f):
-    """Determine which scene a frame belongs to."""
-    # Scene 0-2: 100 frames each (0-299)
-    # Scene 3 (Cross-Attention): 100 frames (300-399) - 10 seconds
-    # Scene 4 (Ensemble): 50 frames (400-449) - 5 seconds
-    # Scene 5 (Ranked): 100 frames (450-549) - 10 seconds
-    # Scene 6 (2D to 3D): 150 frames (550-699) - 15 seconds
-    if f < 300:
-        return f // SCENE_FRAMES  # Scenes 0-2
-    elif f < 400:  # Scene 3 (Cross-Attention): 100 frames (300-399)
+def scene_of_frame(f, include_scene8=False):
+    """Determine which scene a frame belongs to.
+    
+    New scene order:
+    - Scene 0: Inputs (100 frames: 0-99)
+    - Scene 1: Multi-Branch Encoding (100 frames: 100-199)
+    - Scene 2: Cross-Attention (100 frames: 200-299) - was scene 3
+    - Scene 3: Ensemble Prediction (50 frames: 300-349) - was scene 4
+    - Scene 4: Ranked Output (100 frames: 350-449) - was scene 5
+    - Scene 5: 2D to 3D Transition (150 frames: 450-599) - was scene 6
+    - Scene 6: 2D to 3D Transition duplicate (100 frames: 600-699) - was scene 7
+    - Scene 7: 3D Protein Pocket Matching (100 frames: 700-799) - was scene 2, now at end (optional)
+    """
+    if f < 200:
+        return f // SCENE_FRAMES  # Scenes 0-1: 100 frames each
+    elif f < 300:  # Scene 2 (Cross-Attention): 100 frames (200-299)
+        return 2
+    elif f < 350:  # Scene 3 (Ensemble): 50 frames (300-349)
         return 3
-    elif f < 450:  # Scene 4 (Ensemble): 50 frames (400-449)
+    elif f < 450:  # Scene 4 (Ranked): 100 frames (350-449)
         return 4
-    elif f < 550:  # Scene 5 (Ranked): 100 frames (450-549)
+    elif f < 600:  # Scene 5 (2D to 3D): 150 frames (450-599)
         return 5
-    else:  # Scene 6 (2D to 3D): 150 frames (550-699)
+    elif f < 700:  # Scene 6 (2D to 3D duplicate): 100 frames (600-699)
         return 6
+    elif include_scene8 and f < 800:  # Scene 7 (3D Protein Pocket Matching): 100 frames (700-799)
+        return 7
+    else:
+        # Should not reach here if FRAMES is set correctly
+        return 6  # Default to last scene
 
 
-def local_t(f):
+def local_t(f, include_scene8=False):
     """0..1 within scene."""
-    s = scene_of_frame(f)
-    if s < 3:
-        # Scenes 0-2: normal duration (100 frames)
-        return (f % SCENE_FRAMES) / (SCENE_FRAMES - 1)
+    s = scene_of_frame(f, include_scene8)
+    if s < 2:
+        # Scenes 0-1: normal duration (100 frames each)
+        scene_start = s * SCENE_FRAMES
+        local_frame = f - scene_start
+        return local_frame / (SCENE_FRAMES - 1) if SCENE_FRAMES > 1 else 0
+    elif s == 2:
+        # Scene 2 (Cross-Attention): 100 frames (200-299)
+        scene2_start = 200
+        scene2_frames = 100
+        local_frame = f - scene2_start
+        return local_frame / (scene2_frames - 1) if scene2_frames > 1 else 0
     elif s == 3:
-        # Scene 3 (Cross-Attention): 100 frames (300-399)
+        # Scene 3 (Ensemble): 50 frames (300-349)
         scene3_start = 300
-        scene3_frames = 100
+        scene3_frames = 50
         local_frame = f - scene3_start
         return local_frame / (scene3_frames - 1) if scene3_frames > 1 else 0
     elif s == 4:
-        # Scene 4 (Ensemble): 50 frames (400-449)
-        scene4_start = 400
-        scene4_frames = 50
+        # Scene 4 (Ranked): 100 frames (350-449)
+        scene4_start = 350
+        scene4_frames = 100
         local_frame = f - scene4_start
         return local_frame / (scene4_frames - 1) if scene4_frames > 1 else 0
     elif s == 5:
-        # Scene 5 (Ranked): 100 frames (450-549)
+        # Scene 5 (2D to 3D): 150 frames (450-599)
         scene5_start = 450
-        scene5_frames = 100
+        scene5_frames = 150
         local_frame = f - scene5_start
         return local_frame / (scene5_frames - 1) if scene5_frames > 1 else 0
-    else:
-        # Scene 6 (2D to 3D): 150 frames (550-699)
-        scene6_start = 550
-        scene6_frames = 150
+    elif s == 6:
+        # Scene 6 (2D to 3D duplicate): 100 frames (600-699)
+        scene6_start = 600
+        scene6_frames = 100
         local_frame = f - scene6_start
         return local_frame / (scene6_frames - 1) if scene6_frames > 1 else 0
+    else:
+        # Scene 7 (3D Protein Pocket Matching): 100 frames (700-799)
+        scene7_start = 700
+        scene7_frames = 100
+        local_frame = f - scene7_start
+        return local_frame / (scene7_frames - 1) if scene7_frames > 1 else 0
 
 
 def setup_ax():
@@ -355,12 +399,12 @@ def get_subtitle_at_time(subtitles, time_seconds):
     return None
 
 
-def wrap_text(text, max_chars_per_line=80):
+def wrap_text(text, max_chars_per_line=85):
     """Wrap text into multiple lines that fit within the video width.
     
     Args:
         text: The text to wrap
-        max_chars_per_line: Maximum characters per line (default 80 for fontsize 15)
+        max_chars_per_line: Maximum characters per line (default 85 for fontsize 15)
     
     Returns:
         List of text lines
@@ -409,7 +453,7 @@ def draw_subtitle(ax, text, y_pos=0.08, fontsize=15):
         return
     
     # Wrap text into multiple lines
-    lines = wrap_text(text, max_chars_per_line=80)
+    lines = wrap_text(text, max_chars_per_line=85)
     
     if not lines:
         return
@@ -426,11 +470,9 @@ def draw_subtitle(ax, text, y_pos=0.08, fontsize=15):
     for i, line in enumerate(lines):
         line_y = start_y - i * line_height
         
-        # Draw text with background
+        # Draw text without frame (frameless)
         ax.text(0.5, line_y, line, color=FG, fontsize=fontsize, fontweight="normal",
-                ha="center", va="center",
-                bbox=dict(boxstyle="round,pad=0.4", facecolor=(0, 0, 0, 0.75), 
-                         edgecolor=(0.5, 0.5, 0.5, 0.5), linewidth=1))
+                ha="center", va="center")
 
 
 def draw_arrow(ax, x1, y1, x2, y2, alpha=0.8, lw=2.5):
@@ -450,6 +492,127 @@ def render_frame(fig):
     # Convert RGBA to RGB
     img = img[:, :, :3]
     return img
+
+
+def make_background_transparent(img, bg_color=None, color_tolerance=0.15):
+    """
+    Make background pixels transparent by detecting the background color from image edges.
+    Preserves existing transparency if the image already has an alpha channel.
+    
+    Args:
+        img: Image array (H, W, 3) or (H, W, 4) in range [0, 255] or [0, 1]
+        bg_color: Optional RGB tuple (0-1 range) to use as background color.
+                  If None, detects background color from image edges/corners.
+        color_tolerance: How similar pixels must be to background to become transparent (0-1).
+                        Lower values = stricter matching.
+    
+    Returns:
+        RGBA image array in [0, 1] range with transparent background
+    """
+    # Convert to float [0, 1] if needed
+    if img.dtype == np.uint8:
+        img = img.astype(np.float32) / 255.0
+    else:
+        img = img.copy()
+        if img.max() > 1.0:
+            img = img / 255.0
+    
+    # Handle different image formats
+    if len(img.shape) == 2:  # Grayscale
+        img = np.stack([img, img, img], axis=2)
+    
+    # Extract RGB channels and existing alpha if present
+    if img.shape[2] == 4:  # RGBA - preserve existing transparency
+        rgb = img[:, :, :3]
+        existing_alpha = img[:, :, 3]
+    else:  # RGB
+        rgb = img
+        existing_alpha = None
+    
+    # Detect background color from edges/corners if not provided
+    if bg_color is None:
+        h, w = rgb.shape[:2]
+        # Sample from edges and corners (more reliable than center for background)
+        edge_width = max(5, int(min(h, w) * 0.05))  # 5% of image size, minimum 5 pixels
+        edge_samples = []
+        
+        # Top edge
+        edge_samples.append(rgb[:edge_width, :, :].reshape(-1, 3))
+        # Bottom edge
+        edge_samples.append(rgb[-edge_width:, :, :].reshape(-1, 3))
+        # Left edge
+        edge_samples.append(rgb[:, :edge_width, :].reshape(-1, 3))
+        # Right edge
+        edge_samples.append(rgb[:, -edge_width:, :].reshape(-1, 3))
+        
+        # Combine all edge samples
+        all_edge_pixels = np.concatenate(edge_samples, axis=0)
+        
+        # Use median color as background (more robust than mean against outliers)
+        bg_color = np.median(all_edge_pixels, axis=0)
+    
+    bg_color = np.array(bg_color).reshape(1, 1, 3)
+    
+    # Calculate color distance for each pixel
+    # Use Euclidean distance in RGB space
+    color_diff = rgb - bg_color
+    color_distance = np.sqrt(np.sum(color_diff ** 2, axis=2))
+    
+    # Create alpha channel: pixels similar to background become transparent
+    # Use smooth transition for better edge quality
+    # Pixels within tolerance become fully transparent, pixels far from background stay opaque
+    normalized_distance = color_distance / color_tolerance
+    new_alpha = np.clip(normalized_distance, 0.0, 1.0)
+    
+    # If image already had alpha, combine with new alpha (use minimum to preserve existing transparency)
+    if existing_alpha is not None:
+        alpha = np.minimum(new_alpha, existing_alpha)
+    else:
+        alpha = new_alpha
+    
+    # Stack RGB and alpha to create RGBA image
+    rgba = np.dstack([rgb, alpha])
+    
+    return rgba
+
+
+def blend_video_frame_with_background(video_frame, bg_color=(0.05, 0.06, 0.08), blend_factor=0.3):
+    """
+    Blend video frame with the dark background color to create seamless integration.
+    
+    Args:
+        video_frame: Video frame array (H, W, 3) in range [0, 255] or [0, 1]
+        bg_color: Background color RGB tuple (0-1 range)
+        blend_factor: How much to blend with background (0.0 = no blend, 1.0 = full background)
+    
+    Returns:
+        Blended frame array in [0, 1] range
+    """
+    # Convert frame to float [0, 1] if it's in [0, 255] range
+    if video_frame.dtype == np.uint8:
+        frame = video_frame.astype(np.float32) / 255.0
+    else:
+        frame = video_frame.copy()
+        if frame.max() > 1.0:
+            frame = frame / 255.0
+    
+    # Ensure frame has 3 channels (RGB)
+    if len(frame.shape) == 2:  # Grayscale
+        frame = np.stack([frame, frame, frame], axis=2)
+    elif frame.shape[2] == 4:  # RGBA
+        frame = frame[:, :, :3]
+    
+    # Blend with background color
+    bg_array = np.array(bg_color).reshape(1, 1, 3)
+    blended = frame * (1.0 - blend_factor) + bg_array * blend_factor
+    
+    # Adjust brightness slightly to match frame aesthetic (slightly darker)
+    blended = blended * 0.95
+    
+    # Clip to valid range
+    blended = np.clip(blended, 0.0, 1.0)
+    
+    return blended
 
 
 # -----------------------------
@@ -726,40 +889,122 @@ def draw_protein_structure(ax, px, py, rot, alpha_val=0.3):
 
 
 def scene1(ax, t):
-    draw_title(ax, "High Throughput Screening 3D (HTS-3D)", "Inputs: Ligands (SMILES) + Protein Structure")
+    # Title centered horizontally in the frame (not left-aligned like other scenes)
+    ax.text(0.50, 0.94, "High Throughput Screening 3D (HTS-3D)", 
+            color=FG, fontsize=28, fontweight="bold", va="top", ha="center")
+    ax.text(0.50, 0.875, "Inputs: Ligands (SMILES) + Protein Structure", 
+            color=(0.75, 0.78, 0.85), fontsize=14, va="top", ha="center")
 
     # SMILES text flowing in (more realistic examples)
+    # Made 30% smaller and aligned with center of ligand image, stopping at left edge
     smiles = [
         "CC(=O)NC1=CC=C(O)C=C1",  # Acetaminophen
         "C1=CC=C(C=C1)C(C)CC",    # Simple aromatic
         "CC(C)CC1=CC=C(C=C1)O",   # Phenol derivative
         "CN1C=NC2=C1C(=O)N(C(=O)N2C)C",  # Caffeine-like
     ]
-    x_base = lerp(-0.2, 0.10, smoothstep(t))
+    # Ligand image: cx=0.28, cy=0.55, width=0.30, so left edge = 0.28 - 0.15 = 0.13, but need to stop left by 0.30 fw
+    # Stop at left edge of ligand image instead of continuing to 0.10
+    x_base = lerp(-0.2, 0.0, smoothstep(t))
+    # Center text vertically around ligand image center (cy=0.55)
+    # With 4 lines and spacing 0.05: start at 0.55 + 0.075 = 0.625, then subtract 0.05 for each line
+    ligand_center_y = 0.55
+    text_start_y = ligand_center_y + (len(smiles) - 1) * 0.05 / 2  # Center the text block
     for i, s in enumerate(smiles):
-        y = 0.72 - i * 0.06
-        # Use monospace font for SMILES
-        ax.text(x_base, y, s, color=(0.8, 0.85, 0.95), fontsize=12, 
+        y = text_start_y - i * 0.05  # Centered around ligand image center
+        # Use monospace font for SMILES - 30% smaller: 12 * 0.7 = 8.4, rounded to 8.5
+        ax.text(x_base, y, s, color=(0.8, 0.85, 0.95), fontsize=8.5, 
                family='monospace', alpha=0.9)
 
-    # Morphing: SMILES -> molecule diagram (more realistic)
-    morph = smoothstep((t - 0.35) / 0.65)
+    # Load and display ligand image generated by HTS3D_ligandFigure.py
+    # Use Panel A image generated by HTS3D_ligandFigure.py (must run that script first)
+    # This replaces the programmatically drawn molecule diagram with the generated 2D ligand figure
+    ligand_image_path = SCRIPT_DIR / "ligands" / "ligand_figure.png"
     cx, cy = 0.28, 0.55
-    draw_molecule_2d(ax, cx, cy, 0.08, morph)
+    desired_ligand_width = 0.30  # Desired width in axes coordinates
+    
+    if ligand_image_path.exists():
+        try:
+            import matplotlib.image as mpimg
+            img = mpimg.imread(str(ligand_image_path))
+            # Calculate aspect ratio to preserve image proportions
+            img_height, img_width = img.shape[:2]
+            img_aspect_ratio = img_width / img_height
+            image_width = desired_ligand_width
+            image_height = image_width / img_aspect_ratio  # Maintain aspect ratio
+            
+            # Calculate bounding box for image placement (centered at cx, cy)
+            x0 = cx - image_width / 2
+            y0 = cy - image_height / 2
+            
+            # Display image without rotation
+            ax.imshow(img, extent=[x0, x0 + image_width, y0, y0 + image_height], 
+                     aspect='equal', zorder=5, alpha=0.95)
+        except Exception as e:
+            print(f"Warning: Could not load ligand image: {e}")
+            # Fallback to original molecule diagram
+            morph = smoothstep((t - 0.35) / 0.65)
+            draw_molecule_2d(ax, cx, cy, 0.08, morph)
+    else:
+        # Fallback to original molecule diagram if image doesn't exist
+        print(f"Warning: Ligand image not found at {ligand_image_path}")
+        print(f"  Please run HTS3D_ligandFigure.py first to generate the ligand image")
+        morph = smoothstep((t - 0.35) / 0.65)
+        draw_molecule_2d(ax, cx, cy, 0.08, morph)
 
     ax.text(0.10, 0.80, "Ligands (SMILES)", color=(0.75, 0.78, 0.85), fontsize=12)
 
-    # More realistic protein structure
-    px, py = 0.75, 0.55
-    rot = 2 * PI * t * 0.3  # Slower rotation
-    if USE_GPU:
-        rot = float(to_cpu(xp.asarray(rot)))  # Convert to Python float
-    draw_protein_structure(ax, px, py, rot, alpha_val=0.4)
+    # Load and display protein structure image
+    protein_image_path = Path(r"C:\Users\xiaon\mydoc\ant\niu\science2026\NLRP3\abby\proteinLigand1.png")
+    px, py = 0.80, 0.55  # Moved right from 0.75 to 0.80 to accommodate larger size and avoid overlap
+    desired_protein_width = 0.45  # 50% larger: 0.30 * 1.5 = 0.45
+    
+    if protein_image_path.exists():
+        try:
+            import matplotlib.image as mpimg
+            protein_img = mpimg.imread(str(protein_image_path))
+            
+            # Preprocess image to make background transparent
+            if isinstance(protein_img, np.ndarray):
+                # Make background transparent by detecting background color and removing it
+                # This works for both light and dark backgrounds
+                protein_img = make_background_transparent(protein_img, bg_color=None, color_tolerance=0.12)
+            
+            # Calculate aspect ratio to preserve image proportions
+            img_height, img_width = protein_img.shape[:2]
+            img_aspect_ratio = img_width / img_height
+            protein_width = desired_protein_width
+            protein_height = protein_width / img_aspect_ratio  # Maintain aspect ratio
+            
+            # Calculate bounding box for image placement (centered at px, py)
+            x0 = px - protein_width / 2
+            y0 = py - protein_height / 2
+            
+            # Display image without rotation (RGBA image with transparency)
+            ax.imshow(protein_img, extent=[x0, x0 + protein_width, y0, y0 + protein_height], 
+                     aspect='equal', zorder=5)
+        except Exception as e:
+            print(f"Warning: Could not load protein image: {e}")
+            import traceback
+            traceback.print_exc()
+            # Fallback to original protein structure drawing
+            rot = 2 * PI * t * 0.3  # Slower rotation
+            if USE_GPU:
+                rot = float(to_cpu(xp.asarray(rot)))  # Convert to Python float
+            draw_protein_structure(ax, px, py, rot, alpha_val=0.4)
+    else:
+        # Fallback to original protein structure drawing if image doesn't exist
+        print(f"Warning: Protein image not found at {protein_image_path}")
+        rot = 2 * PI * t * 0.3  # Slower rotation
+        if USE_GPU:
+            rot = float(to_cpu(xp.asarray(rot)))  # Convert to Python float
+        draw_protein_structure(ax, px, py, rot, alpha_val=0.4)
 
-    ax.text(0.67, 0.80, "Protein Structure", color=(0.75, 0.78, 0.85), fontsize=12)
+    # Move "Protein Structure" text to align with larger image (moved right to avoid overlap)
+    ax.text(0.75, 0.80, "Protein Structure", color=(0.75, 0.78, 0.85), fontsize=12)
 
-    # Connecting arrow
-    draw_arrow(ax, 0.40, 0.55, 0.58, 0.55, alpha=0.5)
+    # Connecting arrow - extended to connect to larger protein image (left edge at ~0.575)
+    draw_arrow(ax, 0.40, 0.55, 0.575, 0.55, alpha=0.5)
 
 
 # -----------------------------
@@ -827,200 +1072,368 @@ def scene2(ax, t):
     draw_title(ax, "Multi-Branch Encoding", "4 parallel branches: ChemBERTa, Ligand 3D, Protein Pocket, RDKit 2D", 
                title_y=0.97, subtitle_y=0.91)
 
-    # Input molecule on left
-    cx, cy = 0.12, 0.50
-    draw_molecule_2d(ax, cx, cy, 0.05, 1.0)
-    ax.text(0.12, 0.35, "SMILES", color=(0.75, 0.78, 0.85), fontsize=11, ha="center")
+    # Load and display ligand image generated by HTS3D_ligandFigure.py
+    # Input molecule on left - using generated ligand image
+    ligand_image_path = SCRIPT_DIR / "ligands" / "ligand_figure.png"
+    # Moved left to add spacing: original 0.12, moved left by ~0.093 (1/3 of 0.28)
+    cx, cy = 0.027, 0.50
+    # Increased by 1/3: 0.20 * 1.333 = 0.2667
+    image_width, image_height = 0.2667, 0.2667  # Image size in axes coordinates (increased by 1/3)
+    
+    if ligand_image_path.exists():
+        try:
+            import matplotlib.image as mpimg
+            img = mpimg.imread(str(ligand_image_path))
+            # Calculate bounding box for image placement (centered at cx, cy)
+            x0 = cx - image_width / 2
+            y0 = cy - image_height / 2
+            ax.imshow(img, extent=[x0, x0 + image_width, y0, y0 + image_height], 
+                     aspect='auto', zorder=5, alpha=0.95)
+        except Exception as e:
+            print(f"Warning: Could not load ligand image: {e}")
+            # Fallback to original molecule diagram
+            draw_molecule_2d(ax, cx, cy, 0.05, 1.0)
+    else:
+        # Fallback to original molecule diagram if image doesn't exist
+        print(f"Warning: Ligand image not found at {ligand_image_path}")
+        draw_molecule_2d(ax, cx, cy, 0.05, 1.0)
+    
+    ax.text(cx, 0.35, "SMILES", color=(0.75, 0.78, 0.85), fontsize=11, ha="center")
 
-    # Four branches arranged in a grid - slightly larger spacing
-    # Bottom row moved higher (0.30 -> 0.40) to make room for captions
-    # Increased horizontal and vertical spacing slightly (0.36->0.37, 0.59->0.58, 0.68->0.69, 0.42->0.41)
+    # Four branches arranged in a grid - increased spacing between ALL diagrams by 1/3 of diagram width (0.093)
+    # Branch box width = 0.28, box height = 0.2533, so 1/3 of width = 0.093
+    # Horizontal spacing: 
+    #   - Gap between ligand and left column: add 0.093 (left col moved right by 0.093)
+    #   - Gap between columns: add 0.093 (right col moved right by additional 0.093)
+    # Vertical spacing: add 0.093 to gap between rows
+    # Original: left col=0.44, right col=0.65, top row=0.69, bottom row=0.41
     branch_positions = [
-        (0.37, 0.69, "ChemBERTa\n(2D semantics)", "embedding"),
-        (0.58, 0.69, "Ligand 3D\n(Conformers)", "3d"),
-        (0.37, 0.41, "RDKit 2D\n(Descriptors)", "rdkit"),  # Swapped: RDKit 2D to left, moved higher
-        (0.58, 0.41, "Protein Pocket\n(residues)", "pocket"),  # Swapped: Protein Pocket to right, moved higher
+        (0.533, 0.69, "ChemBERTa\n(2D semantics)", "embedding"),  # Left col, top row (0.44 + 0.093)
+        (0.836, 0.69, "Ligand 3D\n(Conformers)", "3d"),  # Right col, top row (0.533 + 0.28 + 0.093 = 0.906, but let's do: 0.65 + 0.093*2 = 0.836)
+        (0.533, 0.317, "RDKit 2D\n(Descriptors)", "rdkit"),  # Left col, bottom row (moved right, moved down)
+        (0.836, 0.317, "Protein Pocket\n(residues)", "pocket"),  # Right col, bottom row
     ]
     
-    # Draw arrows from input to branches
+    # Draw arrows from input to branches (adjusted for new spacing)
     for bx, by, _, _ in branch_positions:
-        draw_arrow(ax, cx + 0.08, cy, bx - 0.08, by, alpha=0.6, lw=2.0)
+        # Arrow starts from right edge of ligand image (cx + image_width/2) and ends at left edge of branch box (bx - box_w/2)
+        draw_arrow(ax, cx + image_width / 2, cy, bx - 0.14, by, alpha=0.6, lw=2.0)
     
-    # Branch 1: ChemBERTa embeddings - slightly larger
+    # Branch 1: ChemBERTa embeddings - load image instead of drawing bars
     bx, by, label, branch_type = branch_positions[0]
-    ax.text(bx, by + 0.11, label, color=FG, fontsize=11.5, fontweight="bold", ha="center")  # Slightly increased spacing and font
-    bars_x0, bars_y0 = bx - 0.095, by - 0.075  # Slightly larger size
-    n_bars = 24
-    for i in range(n_bars):
-        pattern = 0.3 + 0.4 * math.sin(2 * math.pi * (i / n_bars) + 4 * t)
-        h = 0.027 + 0.11 * pattern  # Slightly increased height
-        color_val = 0.7 + 0.2 * pattern
-        ax.add_patch(plt.Rectangle((bars_x0 + i * 0.0075, bars_y0), 0.0055, h,  # Slightly larger sizes
-                                   color=(0.7 * color_val, 0.85 * color_val, 1.0), alpha=0.8))
-    ax.add_patch(plt.Rectangle((bx - 0.105, by - 0.095), 0.21, 0.19, fill=False,  # Slightly larger box size
-                               edgecolor=(0.5, 0.6, 0.8), lw=1.5, alpha=0.5))
+    ax.text(bx, by + 0.135, label, color=FG, fontsize=11.5, fontweight="bold", ha="center")  # Slightly increased spacing and font
     
-    # Branch 2: Ligand 3D conformer (ball-and-stick) - slightly larger
+    # Load and display ChemBERTa image
+    chemberta_image_path = Path(r"C:\Users\xiaon\mydoc\ant\niu\science2026\NLRP3\abby\chemBerta.png")
+    chemberta_box_x0, chemberta_box_y0 = bx - 0.14, by - 0.1267  # Box position (half of increased box size)
+    # Increased by 1/3: 0.21 * 1.333 = 0.28, 0.19 * 1.333 = 0.2533
+    chemberta_box_w, chemberta_box_h = 0.28, 0.2533  # Box size increased by 1/3
+    
+    if chemberta_image_path.exists():
+        try:
+            import matplotlib.image as mpimg
+            img = mpimg.imread(str(chemberta_image_path))
+            
+            # Make background transparent
+            if isinstance(img, np.ndarray):
+                img = make_background_transparent(img, bg_color=None, color_tolerance=0.12)
+            
+            # Calculate aspect ratio to preserve image proportions
+            img_height, img_width = img.shape[:2]
+            img_aspect_ratio = img_width / img_height
+            
+            # Fit image to box while preserving aspect ratio
+            if img_aspect_ratio > (chemberta_box_w / chemberta_box_h):
+                # Image is wider - fit to width
+                image_width = chemberta_box_w
+                image_height = image_width / img_aspect_ratio
+            else:
+                # Image is taller - fit to height
+                image_height = chemberta_box_h
+                image_width = image_height * img_aspect_ratio
+            
+            # Center image in the box
+            image_x0 = chemberta_box_x0 + (chemberta_box_w - image_width) / 2
+            image_y0 = chemberta_box_y0 + (chemberta_box_h - image_height) / 2
+            
+            # Display image - blend with dark background by using the image as-is
+            # The image should have its own background or transparency
+            ax.imshow(img, extent=[image_x0, image_x0 + image_width, image_y0, image_y0 + image_height], 
+                     aspect='equal', zorder=5, alpha=0.95)
+        except Exception as e:
+            print(f"Warning: Could not load ChemBERTa image: {e}")
+            # Fallback to original bar chart
+            bars_x0, bars_y0 = bx - 0.095, by - 0.075
+            n_bars = 24
+            for i in range(n_bars):
+                pattern = 0.3 + 0.4 * math.sin(2 * math.pi * (i / n_bars) + 4 * t)
+                h = 0.027 + 0.11 * pattern
+                color_val = 0.7 + 0.2 * pattern
+                ax.add_patch(plt.Rectangle((bars_x0 + i * 0.0075, bars_y0), 0.0055, h,
+                                           color=(0.7 * color_val, 0.85 * color_val, 1.0), alpha=0.8))
+    else:
+        print(f"Warning: ChemBERTa image not found at {chemberta_image_path}")
+        # Fallback to original bar chart
+        bars_x0, bars_y0 = bx - 0.095, by - 0.075
+        n_bars = 24
+        for i in range(n_bars):
+            pattern = 0.3 + 0.4 * math.sin(2 * math.pi * (i / n_bars) + 4 * t)
+            h = 0.027 + 0.11 * pattern
+            color_val = 0.7 + 0.2 * pattern
+            ax.add_patch(plt.Rectangle((bars_x0 + i * 0.0075, bars_y0), 0.0055, h,
+                                       color=(0.7 * color_val, 0.85 * color_val, 1.0), alpha=0.8))
+    
+    # Draw box frame around the image (optional, to match other branches)
+    ax.add_patch(plt.Rectangle((chemberta_box_x0, chemberta_box_y0), chemberta_box_w, chemberta_box_h, 
+                               fill=False, edgecolor=(0.5, 0.6, 0.8), lw=1.5, alpha=0.5, zorder=6))
+    
+    # Branch 2: Ligand 3D conformer - load image instead of drawing 3D conformer
     bx, by, label, branch_type = branch_positions[1]
-    ax.text(bx, by + 0.11, label, color=FG, fontsize=11.5, fontweight="bold", ha="center")  # Slightly increased spacing and font
-    theta = 2 * np.pi * t * 0.6
-    phi = 0.2 + 0.15 * np.sin(2 * np.pi * t * 0.4)
-    draw_3d_conformer(ax, bx, by, theta, phi)  # This function will need scale parameter if available
-    ax.add_patch(plt.Rectangle((bx - 0.105, by - 0.095), 0.21, 0.19, fill=False,  # Slightly larger box size
-                               edgecolor=(0.5, 0.6, 0.8), lw=1.5, alpha=0.5))
+    ax.text(bx, by + 0.135, label, color=FG, fontsize=11.5, fontweight="bold", ha="center")  # Slightly increased spacing and font
     
-    # Branch 3: RDKit 2D descriptors - Detailed molecular structure with full panel (now on left) - slightly larger
+    # Load and display Ligand 3D image
+    ligand3d_image_path = SCRIPT_DIR / "ligands" / "ligand3D.png"
+    ligand3d_box_x0, ligand3d_box_y0 = bx - 0.14, by - 0.1267  # Box position (half of increased box size)
+    # Increased by 1/3: 0.21 * 1.333 = 0.28, 0.19 * 1.333 = 0.2533
+    ligand3d_box_w, ligand3d_box_h = 0.28, 0.2533  # Box size increased by 1/3
+    
+    if ligand3d_image_path.exists():
+        try:
+            import matplotlib.image as mpimg
+            img = mpimg.imread(str(ligand3d_image_path))
+            
+            # Make background transparent
+            if isinstance(img, np.ndarray):
+                img = make_background_transparent(img, bg_color=None, color_tolerance=0.12)
+            
+            # Calculate aspect ratio to preserve image proportions
+            img_height, img_width = img.shape[:2]
+            img_aspect_ratio = img_width / img_height
+            
+            # Fit image to box while preserving aspect ratio
+            if img_aspect_ratio > (ligand3d_box_w / ligand3d_box_h):
+                # Image is wider - fit to width
+                image_width = ligand3d_box_w
+                image_height = image_width / img_aspect_ratio
+            else:
+                # Image is taller - fit to height
+                image_height = ligand3d_box_h
+                image_width = image_height * img_aspect_ratio
+            
+            # Center image in the box
+            image_x0 = ligand3d_box_x0 + (ligand3d_box_w - image_width) / 2
+            image_y0 = ligand3d_box_y0 + (ligand3d_box_h - image_height) / 2
+            
+            # Display image - blend with dark background by using the image as-is
+            # The image should have its own background or transparency
+            ax.imshow(img, extent=[image_x0, image_x0 + image_width, image_y0, image_y0 + image_height], 
+                     aspect='equal', zorder=5, alpha=0.95)
+        except Exception as e:
+            print(f"Warning: Could not load Ligand 3D image: {e}")
+            # Fallback to original 3D conformer drawing
+            theta = 2 * np.pi * t * 0.6
+            phi = 0.2 + 0.15 * np.sin(2 * np.pi * t * 0.4)
+            draw_3d_conformer(ax, bx, by, theta, phi)
+    else:
+        print(f"Warning: Ligand 3D image not found at {ligand3d_image_path}")
+        # Fallback to original 3D conformer drawing
+        theta = 2 * np.pi * t * 0.6
+        phi = 0.2 + 0.15 * np.sin(2 * np.pi * t * 0.4)
+        draw_3d_conformer(ax, bx, by, theta, phi)
+    
+    # Draw box frame around the image (to match other branches)
+    ax.add_patch(plt.Rectangle((ligand3d_box_x0, ligand3d_box_y0), ligand3d_box_w, ligand3d_box_h, 
+                               fill=False, edgecolor=(0.5, 0.6, 0.8), lw=1.5, alpha=0.5, zorder=6))
+    
+    # Branch 3: RDKit 2D descriptors - load image instead of drawing detailed panel
     bx, by, label, branch_type = branch_positions[2]
-    ax.text(bx, by + 0.11, label, color=FG, fontsize=11.5, fontweight="bold", ha="center")  # Slightly increased spacing and font
+    ax.text(bx, by + 0.135, label, color=FG, fontsize=11.5, fontweight="bold", ha="center")  # Slightly increased spacing and font
     
-    # Draw frame/box for RDKit 2D panel - slightly larger size
-    panel_x0, panel_y0 = bx - 0.105, by - 0.19
-    panel_w, panel_h = 0.21, 0.29
-    ax.add_patch(plt.Rectangle((panel_x0, panel_y0), panel_w, panel_h, 
-                               facecolor=(0.12, 0.15, 0.22), alpha=0.7,
-                               edgecolor=(0.5, 0.6, 0.8), lw=2, zorder=0))
+    # Load and display RDKit 2D image
+    rdkit2d_image_path = Path(r"C:\Users\xiaon\mydoc\ant\niu\science2026\NLRP3\abby\RDkit2D.png")
+    rdkit2d_box_x0, rdkit2d_box_y0 = bx - 0.14, by - 0.1267  # Box position (half of increased box size)
+    # Increased by 1/3: 0.21 * 1.333 = 0.28, 0.19 * 1.333 = 0.2533
+    rdkit2d_box_w, rdkit2d_box_h = 0.28, 0.2533  # Box size increased by 1/3
     
-    # Draw detailed molecular structure (top of panel)
-    mol_y = by + 0.02
-    draw_detailed_rdkit_2d_molecule(ax, bx, mol_y, scale=0.75, alpha=0.95)  # Slightly increased from 0.7 to 0.75
-    
-    # Draw molecular fingerprint visualization (middle of panel)
-    fp_y = by - 0.08
-    ax.text(bx - 0.10, fp_y + 0.015, "Fingerprint (2048 bits):", 
-            color=(0.75, 0.78, 0.85), fontsize=8, ha="left", fontweight="bold")
-    
-    # Generate real fingerprint if RDKit is available
-    if HAS_RDKIT:
+    if rdkit2d_image_path.exists():
         try:
-            mol = Chem.MolFromSmiles(DEFAULT_SMILES)
-            if mol is not None:
-                fp = AllChem.GetMorganFingerprintAsBitVect(mol, 2, nBits=2048)
-                fp_list = list(fp)
-                fp_bits = ''.join([str(bit) for bit in fp_list[:40]])
+            import matplotlib.image as mpimg
+            img = mpimg.imread(str(rdkit2d_image_path))
+            
+            # Make background transparent
+            if isinstance(img, np.ndarray):
+                img = make_background_transparent(img, bg_color=None, color_tolerance=0.12)
+            
+            # Calculate aspect ratio to preserve image proportions
+            img_height, img_width = img.shape[:2]
+            img_aspect_ratio = img_width / img_height
+            
+            # Fit image to box while preserving aspect ratio
+            if img_aspect_ratio > (rdkit2d_box_w / rdkit2d_box_h):
+                # Image is wider - fit to width
+                image_width = rdkit2d_box_w
+                image_height = image_width / img_aspect_ratio
             else:
-                fp_bits = '1010110010110101011101010010110101011101'
-        except:
-            fp_bits = '1010110010110101011101010010110101011101'
+                # Image is taller - fit to height
+                image_height = rdkit2d_box_h
+                image_width = image_height * img_aspect_ratio
+            
+            # Center image in the box
+            image_x0 = rdkit2d_box_x0 + (rdkit2d_box_w - image_width) / 2
+            image_y0 = rdkit2d_box_y0 + (rdkit2d_box_h - image_height) / 2
+            
+            # Display image - blend with dark background by using the image as-is
+            # The image should have its own background or transparency
+            ax.imshow(img, extent=[image_x0, image_x0 + image_width, image_y0, image_y0 + image_height], 
+                     aspect='equal', zorder=5, alpha=0.95)
+        except Exception as e:
+            print(f"Warning: Could not load RDKit 2D image: {e}")
+            # Fallback to original detailed panel (simplified version)
+            panel_x0, panel_y0 = bx - 0.105, by - 0.19
+            panel_w, panel_h = 0.21, 0.29
+            ax.add_patch(plt.Rectangle((panel_x0, panel_y0), panel_w, panel_h, 
+                                       facecolor=(0.12, 0.15, 0.22), alpha=0.7,
+                                       edgecolor=(0.5, 0.6, 0.8), lw=2, zorder=0))
+            mol_y = by + 0.02
+            draw_detailed_rdkit_2d_molecule(ax, bx, mol_y, scale=0.75, alpha=0.95)
     else:
-        # Fallback to example pattern
-        fp_bits = '1010110010110101011101010010110101011101'
+        print(f"Warning: RDKit 2D image not found at {rdkit2d_image_path}")
+        # Fallback to original detailed panel (simplified version)
+        panel_x0, panel_y0 = bx - 0.105, by - 0.19
+        panel_w, panel_h = 0.21, 0.29
+        ax.add_patch(plt.Rectangle((panel_x0, panel_y0), panel_w, panel_h, 
+                                   facecolor=(0.12, 0.15, 0.22), alpha=0.7,
+                                   edgecolor=(0.5, 0.6, 0.8), lw=2, zorder=0))
+        mol_y = by + 0.02
+        draw_detailed_rdkit_2d_molecule(ax, bx, mol_y, scale=0.75, alpha=0.95)
     
-    # Scrolling effect
-    scroll_offset = int(t * 5) % 20
-    display_bits = fp_bits[scroll_offset:scroll_offset+25] + "..."
-    ax.text(bx - 0.10, fp_y, display_bits, color=(0.6, 0.9, 0.8), 
-            fontsize=6, family='monospace', ha="left", alpha=0.9)
+    # Draw box frame around the image (to match other branches)
+    ax.add_patch(plt.Rectangle((rdkit2d_box_x0, rdkit2d_box_y0), rdkit2d_box_w, rdkit2d_box_h, 
+                               fill=False, edgecolor=(0.5, 0.6, 0.8), lw=1.5, alpha=0.5, zorder=6))
     
-    # Draw fingerprint grid visualization (small)
-    if HAS_RDKIT:
-        try:
-            mol = Chem.MolFromSmiles(DEFAULT_SMILES)
-            if mol is not None:
-                fp = AllChem.GetMorganFingerprintAsBitVect(mol, 2, nBits=2048)
-                fp_array = np.array(list(fp), dtype=int)
-                # Reshape to small grid (8x16 = 128 bits shown)
-                fp_grid = np.reshape(fp_array[:128], (8, 16))
-                # Draw mini heatmap
-                for i in range(8):
-                    for j in range(16):
-                        bit_val = fp_grid[i, j]
-                        color = (0.4, 0.7, 0.9) if bit_val else (0.15, 0.15, 0.2)
-                        x_pos = bx - 0.10 + j * 0.012
-                        y_pos = fp_y - 0.03 - i * 0.003
-                        ax.add_patch(plt.Rectangle((x_pos, y_pos), 0.010, 0.0025,
-                                                  facecolor=color, edgecolor='none', alpha=0.8))
-        except:
-            pass
-    
-    # Draw physicochemical properties panel (bottom of panel)
-    props_y = fp_y - 0.05
-    ax.text(bx - 0.10, props_y + 0.015, "Physicochemical properties:", 
-            color=(0.75, 0.78, 0.85), fontsize=8, ha="left", fontweight="bold")
-    
-    # Calculate real properties if RDKit is available
-    if HAS_RDKIT:
-        try:
-            mol = Chem.MolFromSmiles(DEFAULT_SMILES)
-            if mol is not None:
-                mw = Descriptors.MolWt(mol)
-                logp = Descriptors.MolLogP(mol)
-                h_donors = Descriptors.NumHDonors(mol)
-                h_acceptors = Descriptors.NumHAcceptors(mol)
-                props = [
-                    ("Molecular weight:", f"{mw:.1f}"),
-                    ("LogP:", f"{logp:.1f}"),
-                    ("H-bond donors:", str(h_donors)),
-                    ("H-bond acceptors:", str(h_acceptors))
-                ]
-            else:
-                props = [
-                    ("Molecular weight:", "342.4"),
-                    ("LogP:", "2.7"),
-                    ("H-bond donors:", "2"),
-                    ("H-bond acceptors:", "5")
-                ]
-        except:
-            props = [
-                ("Molecular weight:", "342.4"),
-                ("LogP:", "2.7"),
-                ("H-bond donors:", "2"),
-                ("H-bond acceptors:", "5")
-            ]
-    else:
-        props = [
-            ("Molecular weight:", "342.4"),
-            ("LogP:", "2.7"),
-            ("H-bond donors:", "2"),
-            ("H-bond acceptors:", "5")
-        ]
-    
-    for i, (label, value) in enumerate(props):
-        y_pos = props_y - i * 0.018
-        ax.text(bx - 0.10, y_pos, f"• {label} {value}", 
-                color=(0.75, 0.78, 0.85), fontsize=7, ha="left", alpha=0.9)
-    
-    # Branch 4: Protein Pocket (simplified 3D representation) (now on right) - slightly larger
+    # Branch 4: Protein Pocket - load image instead of drawing 3D representation
     bx, by, label, branch_type = branch_positions[3]
-    ax.text(bx, by + 0.11, label, color=FG, fontsize=11.5, fontweight="bold", ha="center")  # Slightly increased spacing and font
-    # Draw pocket residues as 3D balls
-    rng = np.random.default_rng(42)
-    n_res = 8
-    pocket_atoms_3d = []
-    pocket_colors = []
-    residue_types = ['hydrophobic', 'polar', 'charged', 'aromatic']
-    for i in range(n_res):
-        angle = 2 * np.pi * i / n_res
-        r = 0.04 + 0.01 * rng.random()
-        x_3d = r * np.cos(angle)
-        y_3d = r * np.sin(angle)
-        z_3d = 0.01 * rng.random() - 0.005
-        pocket_atoms_3d.append([x_3d, y_3d, z_3d])
-        res_type = residue_types[i % len(residue_types)]
-        if res_type == 'hydrophobic':
-            pocket_colors.append((0.4, 0.6, 0.9))
-        elif res_type == 'polar':
-            pocket_colors.append((0.9, 0.7, 0.4))
-        elif res_type == 'charged':
-            pocket_colors.append((0.9, 0.5, 0.5))
-        else:
-            pocket_colors.append((0.8, 0.6, 0.9))
+    ax.text(bx, by + 0.135, label, color=FG, fontsize=11.5, fontweight="bold", ha="center")  # Slightly increased spacing and font
     
-    # Rotate pocket
-    rot_angle = 2 * np.pi * t * 0.3
-    rot_matrix = np.array([[np.cos(rot_angle), -np.sin(rot_angle), 0],
-                          [np.sin(rot_angle), np.cos(rot_angle), 0],
-                          [0, 0, 1]])
-    pocket_atoms_3d = np.array(pocket_atoms_3d) @ rot_matrix.T
+    # Load and display Protein Pocket image
+    pocket_image_path = Path(r"C:\Users\xiaon\mydoc\ant\niu\science2026\NLRP3\abby\pocketResidue.png")
+    pocket_box_x0, pocket_box_y0 = bx - 0.14, by - 0.1267  # Box position (half of increased box size)
+    # Increased by 1/3: 0.21 * 1.333 = 0.28, 0.19 * 1.333 = 0.2533
+    pocket_box_w, pocket_box_h = 0.28, 0.2533  # Box size increased by 1/3
     
-    # Draw pocket residues
-    pocket_bonds = [(i, (i + 1) % n_res) for i in range(n_res)]
-    draw_ball_and_stick_3d(ax, bx, by, pocket_atoms_3d.tolist(), pocket_bonds,
-                           atom_colors=pocket_colors,
-                           bond_color=(0.6, 0.7, 0.8),
-                           view_angle_x=0.3, view_angle_y=0.2,
-                           atom_scale=1.35, bond_width=1.35, alpha=0.8)  # Slightly increased scale
-    ax.add_patch(plt.Rectangle((bx - 0.105, by - 0.095), 0.21, 0.19, fill=False,  # Slightly larger box size
-                               edgecolor=(0.5, 0.6, 0.8), lw=1.5, alpha=0.5))
+    if pocket_image_path.exists():
+        try:
+            import matplotlib.image as mpimg
+            img = mpimg.imread(str(pocket_image_path))
+            
+            # Make background transparent
+            if isinstance(img, np.ndarray):
+                img = make_background_transparent(img, bg_color=None, color_tolerance=0.12)
+            
+            # Calculate aspect ratio to preserve image proportions
+            img_height, img_width = img.shape[:2]
+            img_aspect_ratio = img_width / img_height
+            
+            # Fit image to box while preserving aspect ratio
+            if img_aspect_ratio > (pocket_box_w / pocket_box_h):
+                # Image is wider - fit to width
+                image_width = pocket_box_w
+                image_height = image_width / img_aspect_ratio
+            else:
+                # Image is taller - fit to height
+                image_height = pocket_box_h
+                image_width = image_height * img_aspect_ratio
+            
+            # Center image in the box
+            image_x0 = pocket_box_x0 + (pocket_box_w - image_width) / 2
+            image_y0 = pocket_box_y0 + (pocket_box_h - image_height) / 2
+            
+            # Display image - blend with dark background by using the image as-is
+            # The image should have its own background or transparency
+            ax.imshow(img, extent=[image_x0, image_x0 + image_width, image_y0, image_y0 + image_height], 
+                     aspect='equal', zorder=5, alpha=0.95)
+        except Exception as e:
+            print(f"Warning: Could not load Protein Pocket image: {e}")
+            # Fallback to original 3D pocket representation
+            rng = np.random.default_rng(42)
+            n_res = 8
+            pocket_atoms_3d = []
+            pocket_colors = []
+            residue_types = ['hydrophobic', 'polar', 'charged', 'aromatic']
+            for i in range(n_res):
+                angle = 2 * np.pi * i / n_res
+                r = 0.04 + 0.01 * rng.random()
+                x_3d = r * np.cos(angle)
+                y_3d = r * np.sin(angle)
+                z_3d = 0.01 * rng.random() - 0.005
+                pocket_atoms_3d.append([x_3d, y_3d, z_3d])
+                res_type = residue_types[i % len(residue_types)]
+                if res_type == 'hydrophobic':
+                    pocket_colors.append((0.4, 0.6, 0.9))
+                elif res_type == 'polar':
+                    pocket_colors.append((0.9, 0.7, 0.4))
+                elif res_type == 'charged':
+                    pocket_colors.append((0.9, 0.5, 0.5))
+                else:
+                    pocket_colors.append((0.8, 0.6, 0.9))
+            
+            # Rotate pocket
+            rot_angle = 2 * np.pi * t * 0.3
+            rot_matrix = np.array([[np.cos(rot_angle), -np.sin(rot_angle), 0],
+                                  [np.sin(rot_angle), np.cos(rot_angle), 0],
+                                  [0, 0, 1]])
+            pocket_atoms_3d = np.array(pocket_atoms_3d) @ rot_matrix.T
+            
+            # Draw pocket residues
+            pocket_bonds = [(i, (i + 1) % n_res) for i in range(n_res)]
+            draw_ball_and_stick_3d(ax, bx, by, pocket_atoms_3d.tolist(), pocket_bonds,
+                                   atom_colors=pocket_colors,
+                                   bond_color=(0.6, 0.7, 0.8),
+                                   view_angle_x=0.3, view_angle_y=0.2,
+                                   atom_scale=1.35, bond_width=1.35, alpha=0.8)
+    else:
+        print(f"Warning: Protein Pocket image not found at {pocket_image_path}")
+        # Fallback to original 3D pocket representation
+        rng = np.random.default_rng(42)
+        n_res = 8
+        pocket_atoms_3d = []
+        pocket_colors = []
+        residue_types = ['hydrophobic', 'polar', 'charged', 'aromatic']
+        for i in range(n_res):
+            angle = 2 * np.pi * i / n_res
+            r = 0.04 + 0.01 * rng.random()
+            x_3d = r * np.cos(angle)
+            y_3d = r * np.sin(angle)
+            z_3d = 0.01 * rng.random() - 0.005
+            pocket_atoms_3d.append([x_3d, y_3d, z_3d])
+            res_type = residue_types[i % len(residue_types)]
+            if res_type == 'hydrophobic':
+                pocket_colors.append((0.4, 0.6, 0.9))
+            elif res_type == 'polar':
+                pocket_colors.append((0.9, 0.7, 0.4))
+            elif res_type == 'charged':
+                pocket_colors.append((0.9, 0.5, 0.5))
+            else:
+                pocket_colors.append((0.8, 0.6, 0.9))
+        
+        # Rotate pocket
+        rot_angle = 2 * np.pi * t * 0.3
+        rot_matrix = np.array([[np.cos(rot_angle), -np.sin(rot_angle), 0],
+                              [np.sin(rot_angle), np.cos(rot_angle), 0],
+                              [0, 0, 1]])
+        pocket_atoms_3d = np.array(pocket_atoms_3d) @ rot_matrix.T
+        
+        # Draw pocket residues
+        pocket_bonds = [(i, (i + 1) % n_res) for i in range(n_res)]
+        draw_ball_and_stick_3d(ax, bx, by, pocket_atoms_3d.tolist(), pocket_bonds,
+                               atom_colors=pocket_colors,
+                               bond_color=(0.6, 0.7, 0.8),
+                               view_angle_x=0.3, view_angle_y=0.2,
+                               atom_scale=1.35, bond_width=1.35, alpha=0.8)
+    
+    # Draw box frame around the image (to match other branches)
+    ax.add_patch(plt.Rectangle((pocket_box_x0, pocket_box_y0), pocket_box_w, pocket_box_h, 
+                               fill=False, edgecolor=(0.5, 0.6, 0.8), lw=1.5, alpha=0.5, zorder=6))
 
 
 # -----------------------------
@@ -1363,39 +1776,62 @@ def scene4(ax, t):
     draw_title(ax, "Cross-Attention", "Ligand features attend to pocket residues")
 
     # More realistic ligand structure (left) - show actual molecular features
+    # 16 ligand features arranged in a gentle curve
     ax.text(0.10, 0.80, "Ligand features", color=FG, fontsize=14, fontweight="bold")
     ligand_center = np.array([0.16, 0.47])
     
-    # Draw ligand as a small molecule with distinct atoms/features
-    ligand_atoms = np.array([
-        [0.14, 0.62],  # Top atom
-        [0.18, 0.52],  # Right atom
-        [0.12, 0.42],  # Bottom-left
-        [0.20, 0.38],  # Bottom-right
-        [0.16, 0.30],  # Bottom center
-    ])
+    # Generate 16 ligand atoms/features in a gentle S-curve
+    n_lig = 16
+    ligand_atoms = []
+    # Create a gentle S-curve: use parametric curve with smooth sine wave
+    curve_width = 0.18  # Horizontal span of the curve
+    curve_amplitude = 0.12  # Vertical amplitude of the curve (gentle S-shape)
+    for i in range(n_lig):
+        # Parameter t from -1 to 1 for symmetric curve
+        t_param = (i / (n_lig - 1) - 0.5) * 2 if n_lig > 1 else 0.0
+        # Gentle S-curve: x varies linearly, y follows a smooth sine curve
+        x_offset = t_param * curve_width / 2  # Linear horizontal distribution from -width/2 to +width/2
+        # S-curve using sine: creates smooth gentle S-shaped curve
+        y_offset = curve_amplitude * np.sin(t_param * np.pi)  # Smooth S-curve from -amplitude to +amplitude
+        ligand_atoms.append([ligand_center[0] + x_offset, ligand_center[1] + y_offset])
+    ligand_atoms = np.array(ligand_atoms)
     
-    # Draw bonds
-    bonds = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 2)]
-    for i, j in bonds:
-        ax.plot([ligand_atoms[i, 0], ligand_atoms[j, 0]],
-               [ligand_atoms[i, 1], ligand_atoms[j, 1]],
-               color=(0.6, 0.95, 0.85), lw=2.5, alpha=0.7)
-    
-    # Draw atoms with different sizes/types
-    atom_colors = [(0.6, 0.95, 0.85), (0.7, 0.98, 0.9), (0.5, 0.9, 0.8), 
-                   (0.65, 0.97, 0.88), (0.55, 0.92, 0.82)]
+    # Draw atoms with different sizes/types (cycle through colors)
+    atom_colors = [
+        (0.6, 0.95, 0.85), (0.7, 0.98, 0.9), (0.5, 0.9, 0.8), (0.65, 0.97, 0.88),
+        (0.55, 0.92, 0.82), (0.75, 0.96, 0.87), (0.58, 0.93, 0.83), (0.68, 0.97, 0.89),
+        (0.62, 0.94, 0.84), (0.72, 0.98, 0.91), (0.52, 0.91, 0.81), (0.66, 0.96, 0.86),
+        (0.59, 0.92, 0.82), (0.69, 0.97, 0.88), (0.63, 0.95, 0.85), (0.73, 0.99, 0.90)
+    ]
     for i, (atom, color) in enumerate(zip(ligand_atoms, atom_colors)):
-        ax.scatter([atom[0]], [atom[1]], s=100 + i*10, color=color, alpha=0.9,
+        ax.scatter([atom[0]], [atom[1]], s=80 + (i % 4)*8, color=color, alpha=0.9,
                   edgecolors=(0.8, 1.0, 0.95), linewidths=1.5)
 
-    # More realistic pocket residues (right) - with amino acid types
+    # More realistic pocket residues (right) - 16 residues with amino acid types
     ax.text(0.72, 0.80, "Pocket residues", color=FG, fontsize=14, fontweight="bold")
-    residues = np.array([[0.78, 0.62], [0.84, 0.55], [0.76, 0.45], [0.86, 0.40], [0.80, 0.32]])
-    residue_types = ['charged', 'polar', 'hydrophobic', 'aromatic', 'polar']
+    # Generate 16 pocket residues in a gentle S-curve (same pattern as ligand)
+    n_res = 16
+    pocket_center = np.array([0.81, 0.47])
+    residues = []
+    residue_types = ['charged', 'polar', 'hydrophobic', 'aromatic']  # Cycle through types
+    # Create a gentle S-curve: use parametric curve with smooth sine wave (same as ligand)
+    curve_width = 0.18  # Horizontal span of the curve
+    curve_amplitude = 0.12  # Vertical amplitude of the curve (gentle S-shape)
+    for i in range(n_res):
+        # Parameter t from -1 to 1 for symmetric curve
+        t_param = (i / (n_res - 1) - 0.5) * 2 if n_res > 1 else 0.0
+        # Gentle S-curve: x varies linearly, y follows a smooth sine curve
+        x_offset = t_param * curve_width / 2  # Linear horizontal distribution from -width/2 to +width/2
+        # S-curve using sine: creates smooth gentle S-shaped curve
+        y_offset = curve_amplitude * np.sin(t_param * np.pi)  # Smooth S-curve from -amplitude to +amplitude
+        residues.append([pocket_center[0] + x_offset, pocket_center[1] + y_offset])
+    residues = np.array(residues)
     
-    for i, (res_pos, res_type) in enumerate(zip(residues, residue_types)):
-        draw_residue(ax, res_pos[0], res_pos[1], res_type, size=140)
+    # Assign residue types cycling through the types
+    residue_type_list = [residue_types[i % len(residue_types)] for i in range(n_res)]
+    
+    for i, (res_pos, res_type) in enumerate(zip(residues, residue_type_list)):
+        draw_residue(ax, res_pos[0], res_pos[1], res_type, size=120)
 
     # Attention beams (more realistic with varying intensities) - GPU-accelerated
     n_lig = len(ligand_atoms)
@@ -1410,22 +1846,23 @@ def scene4(ax, t):
     weights = to_cpu(weights_gpu)
 
     # Draw top-2 edges per ligand atom with gradient effect
+    # Beam widths reduced to 1/3 of original: (1.5 + 3.5*w)/3 = 0.5 + 1.167*w
     for i in range(len(ligand_atoms)):
         top_js = np.argsort(weights[i])[::-1][:2]
         for j in top_js:
             w = weights[i, j]
             alpha = 0.15 + 0.6 * w
-            lw = 1.5 + 3.5 * w
+            lw = (1.5 + 3.5 * w) / 3.0  # 1/3 of original width: 0.5 + 1.167*w
             
             # Create gradient effect along the line
             x1, y1 = ligand_atoms[i, 0], ligand_atoms[i, 1]
             x2, y2 = residues[j, 0], residues[j, 1]
             
-            # Draw main attention beam
+            # Draw main attention beam (thinner)
             ax.plot([x1, x2], [y1, y2],
                     color=(0.85, 0.9, 1.0), alpha=alpha, lw=lw, zorder=1)
             
-            # Add glow effect for strong attention
+            # Add glow effect for strong attention (also 1/3 width)
             if w > 0.7:
                 ax.plot([x1, x2], [y1, y2],
                        color=(0.95, 0.95, 1.0), alpha=alpha*0.3, lw=lw*2, zorder=0)
@@ -1742,138 +2179,508 @@ def _draw_synthetic_3d_ligand(ax, cx, cy, theta, phi, scale, alpha_val):
 
 
 def scene5(ax, t):
-    draw_title(ax, "2D to 3D Transition", "Ligand features attend to pocket residues")
+    # Title centered horizontally in the frame (not left-aligned like other scenes)
+    ax.text(0.50, 0.94, "HTS-3D: Inhibitor ligand binding in protein pocket", 
+            color=FG, fontsize=28, fontweight="bold", va="top", ha="center")
     
-    # Phase 1 (0-0.4): Show 2D structure
-    # Phase 2 (0.4-0.7): Morph from 2D to 3D
-    # Phase 3 (0.7-1.0): Show 3D conformer fitting into pocket
+    # Phase 1 (0-0.2): Show 2D structure (reduced pause)
+    # Phase 2 (0.2-0.5): Morph from 2D to 3D (faster transition start)
+    # Phase 3 (0.5-1.0): Show 3D conformer fitting into pocket
     
-    if t < 0.4:
-        # Phase 1: 2D structure
-        phase1_t = t / 0.4
+    # Load video file for HTS 3D visualization (scene 7 only)
+    video_path = SCRIPT_DIR / "ligands" / "YTDown.com_Shorts_Proteins-are-highly-dynamic-molecules_Media_G48pFBgbqPM_001_720p.mp4"
+    pocket_cx, pocket_cy = 0.78, 0.50  # Moved further right from 0.70 to 0.78
+    hts3d_image_width = 0.57  # 1.5x larger: 0.38 * 1.5 = 0.57
+    hts3d_image_height = 0.57  # Default, will be recalculated if video exists
+    video_reader = None
+    video_frame = None
+    video_fps = None
+    video_frame_count = None
+    hts3d_img = None  # Fallback static image
+    
+    if video_path.exists():
+        try:
+            video_reader = imageio.get_reader(str(video_path))
+            video_meta = video_reader.get_meta_data()
+            video_fps = video_meta.get('fps', 30)
+            video_frame_count = video_reader.count_frames()
+            # Calculate aspect ratio from first frame to preserve proportions
+            first_frame = video_reader.get_data(0)
+            img_height, img_width = first_frame.shape[:2]
+            aspect_ratio = img_width / img_height
+            hts3d_image_height = hts3d_image_width / aspect_ratio  # Adjust height based on aspect ratio
+        except Exception as e:
+            print(f"Warning: Could not load HTS 3D video: {e}")
+            video_reader = None
+            # Fallback to static image
+            hts3d_image_path = SCRIPT_DIR / "nlrp3" / "panel_A_nlrp3_alone.png"
+            if hts3d_image_path.exists():
+                try:
+                    import matplotlib.image as mpimg
+                    hts3d_img = mpimg.imread(str(hts3d_image_path))
+                    img_height, img_width = hts3d_img.shape[:2]
+                    aspect_ratio = img_width / img_height
+                    hts3d_image_height = hts3d_image_width / aspect_ratio
+                except Exception as e2:
+                    print(f"Warning: Could not load fallback HTS 3D image: {e2}")
+    else:
+        print(f"Warning: Video file not found at {video_path}")
+        # Fallback to static image
+        hts3d_image_path = SCRIPT_DIR / "nlrp3" / "panel_A_nlrp3_alone.png"
+        if hts3d_image_path.exists():
+            try:
+                import matplotlib.image as mpimg
+                hts3d_img = mpimg.imread(str(hts3d_image_path))
+                img_height, img_width = hts3d_img.shape[:2]
+                aspect_ratio = img_width / img_height
+                hts3d_image_height = hts3d_image_width / aspect_ratio
+            except Exception as e:
+                print(f"Warning: Could not load fallback HTS 3D image: {e}")
+    
+    if t < 0.2:
+        # Phase 1: 2D structure (reduced pause - faster start)
+        phase1_t = t / 0.2
         alpha_2d = smoothstep(phase1_t)
         
-        # Draw 2D structure on left
-        cx_2d, cy_2d = 0.25, 0.50
-        draw_2d_structure_detailed(ax, cx_2d, cy_2d, scale=1.0, alpha_val=alpha_2d)
+        # Load and display ligand image generated by HTS3D_ligandFigure.py on left
+        ligand_image_path = SCRIPT_DIR / "ligands" / "ligand_figure.png"
+        cx_2d, cy_2d = 0.20, 0.50  # Moved further left from 0.25 to 0.20
+        image_width, image_height = 0.45, 0.45  # 1.5x larger: 0.30 * 1.5 = 0.45
         
-        ax.text(0.25, 0.75, "RDKit 2D Structure", color=FG, fontsize=16, fontweight="bold", ha="center")
-        ax.text(0.25, 0.70, "Flat molecular representation", color=(0.75, 0.78, 0.85), fontsize=12, ha="center")
+        if ligand_image_path.exists():
+            try:
+                import matplotlib.image as mpimg
+                img = mpimg.imread(str(ligand_image_path))
+                # Calculate bounding box for image placement (centered at cx_2d, cy_2d)
+                x0 = cx_2d - image_width / 2
+                y0 = cy_2d - image_height / 2
+                ax.imshow(img, extent=[x0, x0 + image_width, y0, y0 + image_height], 
+                         aspect='auto', zorder=5, alpha=alpha_2d * 0.95)
+            except Exception as e:
+                print(f"Warning: Could not load ligand image: {e}")
+                # Fallback to original 2D structure diagram
+                draw_2d_structure_detailed(ax, cx_2d, cy_2d, scale=1.0, alpha_val=alpha_2d)
+        else:
+            # Fallback to original 2D structure diagram if image doesn't exist
+            print(f"Warning: Ligand image not found at {ligand_image_path}")
+            draw_2d_structure_detailed(ax, cx_2d, cy_2d, scale=1.0, alpha_val=alpha_2d)
         
-        # Arrow pointing right
-        draw_arrow(ax, 0.40, 0.50, 0.55, 0.50, alpha=0.3 * alpha_2d)
+        ax.text(0.20, 0.72, "Inhibitor Ligand", color=FG, fontsize=16, fontweight="bold", ha="center")  # Moved with image
         
-    elif t < 0.7:
-        # Phase 2: Morphing transition
-        phase2_t = (t - 0.4) / 0.3
+        # Arrow pointing right - extended to connect to further apart images
+        draw_arrow(ax, 0.425, 0.50, 0.495, 0.50, alpha=0.3 * alpha_2d)  # Adjusted for new positions
+        
+        # Show HTS 3D video frame with alpha=0 (invisible) to reserve space and avoid jump when it appears
+        if video_reader is not None:
+            try:
+                video_frame = video_reader.get_data(0)
+                # Blend video frame with background for seamless integration (even when invisible)
+                video_frame = blend_video_frame_with_background(video_frame, bg_color=BG, blend_factor=0.25)
+                x0 = pocket_cx - hts3d_image_width / 2
+                y0 = pocket_cy - hts3d_image_height / 2
+                ax.imshow(video_frame, extent=[x0, x0 + hts3d_image_width, y0, y0 + hts3d_image_height], 
+                         aspect='equal', zorder=5, alpha=0.0)  # Invisible but reserves space
+            except Exception as e:
+                print(f"Warning: Could not read video frame: {e}")
+        elif hts3d_img is not None:
+            x0 = pocket_cx - hts3d_image_width / 2
+            y0 = pocket_cy - hts3d_image_height / 2
+            ax.imshow(hts3d_img, extent=[x0, x0 + hts3d_image_width, y0, y0 + hts3d_image_height], 
+                     aspect='equal', zorder=5, alpha=0.0)  # Invisible but reserves space
+        
+    elif t < 0.5:
+        # Phase 2: Morphing transition (faster start)
+        phase2_t = (t - 0.2) / 0.3
         morph_t = smoothstep(phase2_t)
         
         # Keep 2D visible but dimmed (not fading out)
         alpha_2d = 0.3  # Dimmed but visible
-        cx_2d, cy_2d = 0.25, 0.50
-        draw_2d_structure_detailed(ax, cx_2d, cy_2d, scale=1.0, alpha_val=alpha_2d)
+        cx_2d, cy_2d = 0.20, 0.50  # Moved further left from 0.25 to 0.20
+        
+        # Load and display ligand image generated by HTS3D_ligandFigure.py on left
+        ligand_image_path = SCRIPT_DIR / "ligands" / "ligand_figure.png"
+        image_width, image_height = 0.45, 0.45  # 1.5x larger: 0.30 * 1.5 = 0.45
+        
+        if ligand_image_path.exists():
+            try:
+                import matplotlib.image as mpimg
+                img = mpimg.imread(str(ligand_image_path))
+                # Calculate bounding box for image placement (centered at cx_2d, cy_2d)
+                x0 = cx_2d - image_width / 2
+                y0 = cy_2d - image_height / 2
+                ax.imshow(img, extent=[x0, x0 + image_width, y0, y0 + image_height], 
+                         aspect='auto', zorder=5, alpha=alpha_2d * 0.95)
+            except Exception as e:
+                print(f"Warning: Could not load ligand image: {e}")
+                # Fallback to original 2D structure diagram
+                draw_2d_structure_detailed(ax, cx_2d, cy_2d, scale=1.0, alpha_val=alpha_2d)
+        else:
+            # Fallback to original 2D structure diagram if image doesn't exist
+            draw_2d_structure_detailed(ax, cx_2d, cy_2d, scale=1.0, alpha_val=alpha_2d)
         
         # Keep 2D labels visible but dimmed
-        ax.text(0.25, 0.75, "RDKit 2D Structure", color=FG, fontsize=16, fontweight="bold", ha="center", alpha=alpha_2d)
-        ax.text(0.25, 0.70, "Flat molecular representation", color=(0.75, 0.78, 0.85), fontsize=12, ha="center", alpha=alpha_2d)
+        ax.text(0.20, 0.72, "2D (Piro Art)", color=FG, fontsize=16, fontweight="bold", ha="center", alpha=alpha_2d)  # Moved with image
         
-        # Arrow pointing right (visible throughout)
-        draw_arrow(ax, 0.40, 0.50, 0.55, 0.50, alpha=0.6)
+        # Arrow pointing right (visible throughout) - extended to connect to further apart images
+        draw_arrow(ax, 0.425, 0.50, 0.495, 0.50, alpha=0.6)  # Adjusted for new positions
         
-        # Fade in 3D with enhanced rotation
-        alpha_3d = morph_t
-        ligand_cx, ligand_cy = 0.25, 0.50
-        pocket_cx, pocket_cy = 0.70, 0.50
+        # Fade in 3D much faster - use accelerated fade-in curve
+        # Apply a power function to make fade-in faster (e.g., phase2_t^0.5 for faster, or use a faster smoothstep)
+        fast_fade_t = smoothstep(phase2_t * 2.0)  # Multiply by 2.0 to make it fade in twice as fast
+        fast_fade_t = min(1.0, fast_fade_t)  # Clamp to 1.0
+        alpha_3d = fast_fade_t
+        ligand_cx, ligand_cy = 0.20, 0.50  # Moved further left
+        pocket_cx, pocket_cy = 0.78, 0.50  # Moved further right
         # Enhanced rotation to show 3D structure better
         ligand_theta = 2 * np.pi * t * 0.7  # Faster rotation during transition
         ligand_phi = 0.25 + 0.1 * np.sin(2 * np.pi * t * 0.5)  # Varying angle
         pocket_rot = 0.1
         
-        # Add shadow during transition for depth
-        if morph_t > 0.3:
-            from matplotlib.patches import Ellipse
-            shadow_alpha = (morph_t - 0.3) / 0.7 * 0.3
-            shadow_y = lerp(ligand_cy, pocket_cy, morph_t) - 0.06
-            shadow_x = lerp(ligand_cx, pocket_cx, morph_t)
-            shadow_ellipse = Ellipse((shadow_x, shadow_y), 0.15 * morph_t, 0.05 * morph_t, 
-                                     facecolor=(0.1, 0.1, 0.15), alpha=shadow_alpha, zorder=0)
-            ax.add_patch(shadow_ellipse)
+        # Display HTS 3D video frame on right using pre-calculated dimensions (consistent aspect ratio)
+        if video_reader is not None:
+            try:
+                # Calculate which frame to show based on phase2_t (0-1) within the transition phase
+                frame_index = int(phase2_t * (video_frame_count - 1)) if video_frame_count > 1 else 0
+                frame_index = min(frame_index, video_frame_count - 1)  # Clamp to valid range
+                video_frame = video_reader.get_data(frame_index)
+                # Blend video frame with background for seamless integration
+                video_frame = blend_video_frame_with_background(video_frame, bg_color=BG, blend_factor=0.25)
+                x0 = pocket_cx - hts3d_image_width / 2
+                y0 = pocket_cy - hts3d_image_height / 2
+                ax.imshow(video_frame, extent=[x0, x0 + hts3d_image_width, y0, y0 + hts3d_image_height], 
+                         aspect='equal', zorder=5, alpha=alpha_3d)
+            except Exception as e:
+                print(f"Warning: Could not read video frame: {e}")
+                # Fallback to original 3D pocket matching diagram
+                draw_3d_pocket_matching(ax, ligand_cx, ligand_cy, pocket_cx, pocket_cy,
+                                      ligand_theta, ligand_phi, pocket_rot, morph_t, alpha_val=alpha_3d)
+        elif hts3d_img is not None:
+            x0 = pocket_cx - hts3d_image_width / 2
+            y0 = pocket_cy - hts3d_image_height / 2
+            ax.imshow(hts3d_img, extent=[x0, x0 + hts3d_image_width, y0, y0 + hts3d_image_height], 
+                     aspect='equal', zorder=5, alpha=alpha_3d)
+        else:
+            # Fallback to original 3D pocket matching diagram if video/image doesn't exist
+            draw_3d_pocket_matching(ax, ligand_cx, ligand_cy, pocket_cx, pocket_cy,
+                                  ligand_theta, ligand_phi, pocket_rot, morph_t, alpha_val=alpha_3d)
         
-        draw_3d_pocket_matching(ax, ligand_cx, ligand_cy, pocket_cx, pocket_cy,
-                              ligand_theta, ligand_phi, pocket_rot, morph_t, alpha_val=alpha_3d)
-        
-        ax.text(0.70, 0.75, "3D Conformer Generation", color=FG, fontsize=16, fontweight="bold", ha="center")
-        ax.text(0.70, 0.70, f"Transition: {int(morph_t*100)}%", color=(0.75, 0.78, 0.85), fontsize=12, ha="center")
+        # Text label above the image
+        ax.text(0.78, 0.82, "HTS 3D", color=FG, fontsize=16, fontweight="bold", ha="center")  # Above video/image (moved higher to avoid overlap)
         
     else:
         # Phase 3: 3D conformer in pocket
-        phase3_t = (t - 0.7) / 0.3
+        phase3_t = (t - 0.5) / 0.5
         alpha_3d = 1.0
         
         # Keep 2D visible but dimmed on the left
         alpha_2d = 0.3  # Dimmed but visible
-        cx_2d, cy_2d = 0.25, 0.50
-        draw_2d_structure_detailed(ax, cx_2d, cy_2d, scale=1.0, alpha_val=alpha_2d)
+        cx_2d, cy_2d = 0.20, 0.50  # Moved further left from 0.25 to 0.20
+        
+        # Load and display ligand image generated by HTS3D_ligandFigure.py on left
+        ligand_image_path = SCRIPT_DIR / "ligands" / "ligand_figure.png"
+        image_width, image_height = 0.45, 0.45  # 1.5x larger: 0.30 * 1.5 = 0.45
+        
+        if ligand_image_path.exists():
+            try:
+                import matplotlib.image as mpimg
+                img = mpimg.imread(str(ligand_image_path))
+                # Calculate bounding box for image placement (centered at cx_2d, cy_2d)
+                x0 = cx_2d - image_width / 2
+                y0 = cy_2d - image_height / 2
+                ax.imshow(img, extent=[x0, x0 + image_width, y0, y0 + image_height], 
+                         aspect='auto', zorder=5, alpha=alpha_2d * 0.95)
+            except Exception as e:
+                print(f"Warning: Could not load ligand image: {e}")
+                # Fallback to original 2D structure diagram
+                draw_2d_structure_detailed(ax, cx_2d, cy_2d, scale=1.0, alpha_val=alpha_2d)
+        else:
+            # Fallback to original 2D structure diagram if image doesn't exist
+            draw_2d_structure_detailed(ax, cx_2d, cy_2d, scale=1.0, alpha_val=alpha_2d)
         
         # Keep 2D labels visible but dimmed
-        ax.text(0.25, 0.75, "RDKit 2D Structure", color=FG, fontsize=16, fontweight="bold", ha="center", alpha=alpha_2d)
-        ax.text(0.25, 0.70, "Flat molecular representation", color=(0.75, 0.78, 0.85), fontsize=12, ha="center", alpha=alpha_2d)
+        ax.text(0.20, 0.72, "2D (SOTA)", color=FG, fontsize=16, fontweight="bold", ha="center", alpha=alpha_2d)  # Moved with image
         
-        # Arrow pointing right (visible throughout)
-        draw_arrow(ax, 0.40, 0.50, 0.55, 0.50, alpha=0.6)
+        # Arrow pointing right (visible throughout) - extended to connect to further apart images
+        draw_arrow(ax, 0.425, 0.50, 0.495, 0.50, alpha=0.6)  # Adjusted for new positions
         
-        ligand_cx, ligand_cy = 0.25, 0.50
-        pocket_cx, pocket_cy = 0.70, 0.50
+        ligand_cx, ligand_cy = 0.20, 0.50  # Moved further left
+        pocket_cx, pocket_cy = 0.78, 0.50  # Moved further right
         # Enhanced rotation for better 3D visualization
         ligand_theta = 2 * np.pi * t * 0.6  # Faster rotation
         ligand_phi = 0.25 + 0.15 * np.sin(2 * np.pi * t * 0.4)  # Varying viewing angle
         pocket_rot = 0.1 + 0.05 * np.sin(2 * np.pi * t * 0.2)
         morph_t = 1.0  # Fully morphed
         
-        # Add subtle shadow/ground plane for depth
-        shadow_y = pocket_cy - 0.08
-        from matplotlib.patches import Ellipse
-        shadow_ellipse = Ellipse((pocket_cx, shadow_y), 0.20, 0.06, 
-                                 facecolor=(0.1, 0.1, 0.15), alpha=0.3, zorder=0)
-        ax.add_patch(shadow_ellipse)
+        # Display HTS 3D video frame on right using pre-calculated dimensions (consistent aspect ratio)
+        if video_reader is not None:
+            try:
+                # Calculate which frame to show based on t (0-1) within the entire scene
+                # Map t to video frame index, looping if needed
+                frame_index = int(t * (video_frame_count - 1)) if video_frame_count > 1 else 0
+                frame_index = frame_index % video_frame_count  # Loop the video
+                video_frame = video_reader.get_data(frame_index)
+                # Blend video frame with background for seamless integration
+                video_frame = blend_video_frame_with_background(video_frame, bg_color=BG, blend_factor=0.25)
+                x0 = pocket_cx - hts3d_image_width / 2
+                y0 = pocket_cy - hts3d_image_height / 2
+                ax.imshow(video_frame, extent=[x0, x0 + hts3d_image_width, y0, y0 + hts3d_image_height], 
+                         aspect='equal', zorder=5, alpha=alpha_3d)
+            except Exception as e:
+                print(f"Warning: Could not read video frame: {e}")
+                # Fallback to original 3D pocket matching diagram
+                draw_3d_pocket_matching(ax, ligand_cx, ligand_cy, pocket_cx, pocket_cy,
+                                      ligand_theta, ligand_phi, pocket_rot, morph_t, alpha_val=alpha_3d)
+        elif hts3d_img is not None:
+            x0 = pocket_cx - hts3d_image_width / 2
+            y0 = pocket_cy - hts3d_image_height / 2
+            ax.imshow(hts3d_img, extent=[x0, x0 + hts3d_image_width, y0, y0 + hts3d_image_height], 
+                     aspect='equal', zorder=5, alpha=alpha_3d)
+        else:
+            # Fallback to original 3D pocket matching diagram if video/image doesn't exist
+            draw_3d_pocket_matching(ax, ligand_cx, ligand_cy, pocket_cx, pocket_cy,
+                                  ligand_theta, ligand_phi, pocket_rot, morph_t, alpha_val=alpha_3d)
         
-        draw_3d_pocket_matching(ax, ligand_cx, ligand_cy, pocket_cx, pocket_cy,
-                              ligand_theta, ligand_phi, pocket_rot, morph_t, alpha_val=alpha_3d)
+        # Text label above the image
+        ax.text(0.78, 0.82, "HTS 3D", color=FG, fontsize=16, fontweight="bold", ha="center")  # Above video/image (moved higher to avoid overlap)
         
-        ax.text(0.70, 0.75, "3D Pocket Matching", color=FG, fontsize=16, fontweight="bold", ha="center")
-        ax.text(0.70, 0.70, "Ligand fits into binding site", color=(0.75, 0.78, 0.85), fontsize=12, ha="center")
-        
-        # Add fit quality indicator with 3D perspective
+        # Add fit quality indicator with 3D perspective - moved with image
         fit_score = 0.85 + 0.1 * np.sin(2 * np.pi * t * 0.5)
-        ax.text(0.70, 0.25, f"Binding Affinity: {fit_score:.2f}", 
-               color=(0.95, 0.85, 0.55), fontsize=14, fontweight="bold", ha="center")
-        
-        # Add 3D rotation indicator
-        ax.text(0.70, 0.18, "Rotating 3D view", color=(0.65, 0.75, 0.85), fontsize=10, ha="center", 
+        ax.text(0.78, 0.25, f"Binding Affinity: {fit_score:.2f}", 
+               color=(0.95, 0.85, 0.55), fontsize=14, fontweight="bold", ha="center")  # Moved with image
+        '''
+        # Add 3D rotation indicator - moved with image
+        ax.text(0.78, 0.18, "Rotating 3D view", color=(0.65, 0.75, 0.85), fontsize=10, ha="center",  # Moved with image 
                style='italic', alpha=0.7)
+        '''
 
-
+# -----------------------------
+# Scene 8: 2D to 3D Transition (Duplicate of Scene 7)
+# -----------------------------
+def scene8(ax, t):
+    # Title centered horizontally in the frame (not left-aligned like other scenes)
+    ax.text(0.50, 0.94, "HTS-3D vs 2D in the State of the Art (SOTA)", 
+            color=FG, fontsize=28, fontweight="bold", va="top", ha="center")
+    
+    # Phase 1 (0-0.2): Show 2D structure (reduced pause)
+    # Phase 2 (0.2-0.5): Morph from 2D to 3D (faster transition start)
+    # Phase 3 (0.5-1.0): Show 3D conformer fitting into pocket
+    
+    # Load and calculate aspect ratio for HTS 3D image ONCE at the beginning
+    # This ensures consistent sizing throughout all phases to avoid visual jumps
+    hts3d_image_path = SCRIPT_DIR / "nlrp3" / "panel_A_nlrp3_alone.png"
+    pocket_cx, pocket_cy = 0.78, 0.50  # Moved further right from 0.70 to 0.78
+    hts3d_image_width = 0.57  # 1.5x larger: 0.38 * 1.5 = 0.57
+    hts3d_image_height = 0.57  # Default, will be recalculated if image exists
+    hts3d_img = None
+    
+    if hts3d_image_path.exists():
+        try:
+            import matplotlib.image as mpimg
+            hts3d_img = mpimg.imread(str(hts3d_image_path))
+            # Calculate aspect ratio to preserve original image proportions
+            # img.shape is [height, width, channels]
+            img_height, img_width = hts3d_img.shape[:2]
+            aspect_ratio = img_width / img_height
+            hts3d_image_height = hts3d_image_width / aspect_ratio  # Adjust height based on aspect ratio
+        except Exception as e:
+            print(f"Warning: Could not load HTS 3D image: {e}")
+            hts3d_img = None
+    
+    if t < 0.2:
+        # Phase 1: 2D structure (reduced pause - faster start)
+        phase1_t = t / 0.2
+        alpha_2d = smoothstep(phase1_t)
+        
+        # Load and display ligand image generated by HTS3D_ligandFigure.py on left
+        ligand_image_path = SCRIPT_DIR / "ligands" / "ligand_figure.png"
+        cx_2d, cy_2d = 0.20, 0.50  # Moved further left from 0.25 to 0.20
+        image_width, image_height = 0.45, 0.45  # 1.5x larger: 0.30 * 1.5 = 0.45
+        
+        if ligand_image_path.exists():
+            try:
+                import matplotlib.image as mpimg
+                img = mpimg.imread(str(ligand_image_path))
+                # Calculate bounding box for image placement (centered at cx_2d, cy_2d)
+                x0 = cx_2d - image_width / 2
+                y0 = cy_2d - image_height / 2
+                ax.imshow(img, extent=[x0, x0 + image_width, y0, y0 + image_height], 
+                         aspect='auto', zorder=5, alpha=alpha_2d * 0.95)
+            except Exception as e:
+                print(f"Warning: Could not load ligand image: {e}")
+                # Fallback to original 2D structure diagram
+                draw_2d_structure_detailed(ax, cx_2d, cy_2d, scale=1.0, alpha_val=alpha_2d)
+        else:
+            # Fallback to original 2D structure diagram if image doesn't exist
+            print(f"Warning: Ligand image not found at {ligand_image_path}")
+            draw_2d_structure_detailed(ax, cx_2d, cy_2d, scale=1.0, alpha_val=alpha_2d)
+        
+        ax.text(0.20, 0.72, "2D (SOTA)", color=FG, fontsize=16, fontweight="bold", ha="center")  # Moved with image
+        
+        # Arrow pointing right - extended to connect to further apart images
+        draw_arrow(ax, 0.425, 0.50, 0.495, 0.50, alpha=0.3 * alpha_2d)  # Adjusted for new positions
+        
+        # Show HTS 3D image with alpha=0 (invisible) to reserve space and avoid jump when it appears
+        if hts3d_img is not None:
+            x0 = pocket_cx - hts3d_image_width / 2
+            y0 = pocket_cy - hts3d_image_height / 2
+            ax.imshow(hts3d_img, extent=[x0, x0 + hts3d_image_width, y0, y0 + hts3d_image_height], 
+                     aspect='equal', zorder=5, alpha=0.0)  # Invisible but reserves space
+        
+    elif t < 0.5:
+        # Phase 2: Morphing transition (faster start)
+        phase2_t = (t - 0.2) / 0.3
+        morph_t = smoothstep(phase2_t)
+        
+        # Keep 2D visible but dimmed (not fading out)
+        alpha_2d = 0.3  # Dimmed but visible
+        cx_2d, cy_2d = 0.20, 0.50  # Moved further left from 0.25 to 0.20
+        
+        # Load and display ligand image generated by HTS3D_ligandFigure.py on left
+        ligand_image_path = SCRIPT_DIR / "ligands" / "ligand_figure.png"
+        image_width, image_height = 0.45, 0.45  # 1.5x larger: 0.30 * 1.5 = 0.45
+        
+        if ligand_image_path.exists():
+            try:
+                import matplotlib.image as mpimg
+                img = mpimg.imread(str(ligand_image_path))
+                # Calculate bounding box for image placement (centered at cx_2d, cy_2d)
+                x0 = cx_2d - image_width / 2
+                y0 = cy_2d - image_height / 2
+                ax.imshow(img, extent=[x0, x0 + image_width, y0, y0 + image_height], 
+                         aspect='auto', zorder=5, alpha=alpha_2d * 0.95)
+            except Exception as e:
+                print(f"Warning: Could not load ligand image: {e}")
+                # Fallback to original 2D structure diagram
+                draw_2d_structure_detailed(ax, cx_2d, cy_2d, scale=1.0, alpha_val=alpha_2d)
+        else:
+            # Fallback to original 2D structure diagram if image doesn't exist
+            draw_2d_structure_detailed(ax, cx_2d, cy_2d, scale=1.0, alpha_val=alpha_2d)
+        
+        # Keep 2D labels visible but dimmed
+        ax.text(0.20, 0.72, "2D (SOTA)", color=FG, fontsize=16, fontweight="bold", ha="center", alpha=alpha_2d)  # Moved with image
+        
+        # Arrow pointing right (visible throughout) - extended to connect to further apart images
+        draw_arrow(ax, 0.425, 0.50, 0.495, 0.50, alpha=0.6)  # Adjusted for new positions
+        
+        # Fade in 3D much faster - use accelerated fade-in curve
+        # Apply a power function to make fade-in faster (e.g., phase2_t^0.5 for faster, or use a faster smoothstep)
+        fast_fade_t = smoothstep(phase2_t * 2.0)  # Multiply by 2.0 to make it fade in twice as fast
+        fast_fade_t = min(1.0, fast_fade_t)  # Clamp to 1.0
+        alpha_3d = fast_fade_t
+        ligand_cx, ligand_cy = 0.20, 0.50  # Moved further left
+        pocket_cx, pocket_cy = 0.78, 0.50  # Moved further right
+        # Enhanced rotation to show 3D structure better
+        ligand_theta = 2 * np.pi * t * 0.7  # Faster rotation during transition
+        ligand_phi = 0.25 + 0.1 * np.sin(2 * np.pi * t * 0.5)  # Varying angle
+        pocket_rot = 0.1
+        
+        # Display HTS 3D image on right using pre-calculated dimensions (consistent aspect ratio)
+        if hts3d_img is not None:
+            x0 = pocket_cx - hts3d_image_width / 2
+            y0 = pocket_cy - hts3d_image_height / 2
+            ax.imshow(hts3d_img, extent=[x0, x0 + hts3d_image_width, y0, y0 + hts3d_image_height], 
+                     aspect='equal', zorder=5, alpha=alpha_3d)
+        else:
+            # Fallback to original 3D pocket matching diagram if image doesn't exist
+            draw_3d_pocket_matching(ax, ligand_cx, ligand_cy, pocket_cx, pocket_cy,
+                                  ligand_theta, ligand_phi, pocket_rot, morph_t, alpha_val=alpha_3d)
+        
+        # Keep text labels above and below the image - moved with image
+        ax.text(0.78, 0.75, "HTS 3D", color=FG, fontsize=16, fontweight="bold", ha="center")  # Moved with image
+        ax.text(0.78, 0.70, f"Transition: {int(morph_t*100)}%", color=(0.75, 0.78, 0.85), fontsize=12, ha="center")  # Moved with image
+        
+    else:
+        # Phase 3: 3D conformer in pocket
+        phase3_t = (t - 0.5) / 0.5
+        alpha_3d = 1.0
+        
+        # Keep 2D visible but dimmed on the left
+        alpha_2d = 0.3  # Dimmed but visible
+        cx_2d, cy_2d = 0.20, 0.50  # Moved further left from 0.25 to 0.20
+        
+        # Load and display ligand image generated by HTS3D_ligandFigure.py on left
+        ligand_image_path = SCRIPT_DIR / "ligands" / "ligand_figure.png"
+        image_width, image_height = 0.45, 0.45  # 1.5x larger: 0.30 * 1.5 = 0.45
+        
+        if ligand_image_path.exists():
+            try:
+                import matplotlib.image as mpimg
+                img = mpimg.imread(str(ligand_image_path))
+                # Calculate bounding box for image placement (centered at cx_2d, cy_2d)
+                x0 = cx_2d - image_width / 2
+                y0 = cy_2d - image_height / 2
+                ax.imshow(img, extent=[x0, x0 + image_width, y0, y0 + image_height], 
+                         aspect='auto', zorder=5, alpha=alpha_2d * 0.95)
+            except Exception as e:
+                print(f"Warning: Could not load ligand image: {e}")
+                # Fallback to original 2D structure diagram
+                draw_2d_structure_detailed(ax, cx_2d, cy_2d, scale=1.0, alpha_val=alpha_2d)
+        else:
+            # Fallback to original 2D structure diagram if image doesn't exist
+            draw_2d_structure_detailed(ax, cx_2d, cy_2d, scale=1.0, alpha_val=alpha_2d)
+        
+        # Keep 2D labels visible but dimmed
+        ax.text(0.20, 0.72, "2D (SOTA)", color=FG, fontsize=16, fontweight="bold", ha="center", alpha=alpha_2d)  # Moved with image
+        
+        # Arrow pointing right (visible throughout) - extended to connect to further apart images
+        draw_arrow(ax, 0.425, 0.50, 0.495, 0.50, alpha=0.6)  # Adjusted for new positions
+        
+        ligand_cx, ligand_cy = 0.20, 0.50  # Moved further left
+        pocket_cx, pocket_cy = 0.78, 0.50  # Moved further right
+        # Enhanced rotation for better 3D visualization
+        ligand_theta = 2 * np.pi * t * 0.6  # Faster rotation
+        ligand_phi = 0.25 + 0.15 * np.sin(2 * np.pi * t * 0.4)  # Varying viewing angle
+        pocket_rot = 0.1 + 0.05 * np.sin(2 * np.pi * t * 0.2)
+        morph_t = 1.0  # Fully morphed
+        
+        # Display HTS 3D image on right using pre-calculated dimensions (consistent aspect ratio)
+        if hts3d_img is not None:
+            x0 = pocket_cx - hts3d_image_width / 2
+            y0 = pocket_cy - hts3d_image_height / 2
+            ax.imshow(hts3d_img, extent=[x0, x0 + hts3d_image_width, y0, y0 + hts3d_image_height], 
+                     aspect='equal', zorder=5, alpha=alpha_3d)
+        else:
+            # Fallback to original 3D pocket matching diagram if image doesn't exist
+            draw_3d_pocket_matching(ax, ligand_cx, ligand_cy, pocket_cx, pocket_cy,
+                                  ligand_theta, ligand_phi, pocket_rot, morph_t, alpha_val=alpha_3d)
+        
+        # Keep text labels above and below the image - moved with image
+        ax.text(0.78, 0.75, "HTS 3D", color=FG, fontsize=16, fontweight="bold", ha="center")  # Moved with image
+        ax.text(0.78, 0.70, "Transition", color=(0.75, 0.78, 0.85), fontsize=12, ha="center")  # Moved with image
+        
+        # Add fit quality indicator with 3D perspective - moved with image
+        fit_score = 0.85 + 0.1 * np.sin(2 * np.pi * t * 0.5)
+        ax.text(0.78, 0.25, f"Binding Affinity: {fit_score:.2f}", 
+               color=(0.95, 0.85, 0.55), fontsize=14, fontweight="bold", ha="center")  # Moved with image
+        '''
+        # Add 3D rotation indicator - moved with image
+        ax.text(0.78, 0.18, "Rotating 3D view", color=(0.65, 0.75, 0.85), fontsize=10, ha="center",  # Moved with image 
+               style='italic', alpha=0.7)
+        '''
 # -----------------------------
 # Scene 6: Ensemble Prediction
 # -----------------------------
 def scene6(ax, t):
-    draw_title(ax, "Ensemble Prediction", "Multiple models vote for robust scores")
+    draw_title(ax, "Ensemble Prediction", "15 models (5 folds × 3 feature selection methods)")
 
-    # Line 1: Draw three model blocks (top row)
+    # Line 1: Draw three model blocks (top row) with feature selection labels
     line1_y = 0.65
     xs = [0.20, 0.42, 0.64]
-    labels = ["Model 1", "Model 2", "Model 3"]
+    # Updated labels to reflect 5 folds × feature selection method
+    labels = ["5 folds ×\nLASSO", "5 folds ×\nPCA", "5 folds ×\nMutual Info"]
     outs = []
     for x, lab, phase in zip(xs, labels, [0.0, 0.33, 0.66]):
         ax.add_patch(plt.Rectangle((x, line1_y), 0.16, 0.16, facecolor=(0.2, 0.25, 0.35), alpha=0.9,
                                    edgecolor=(0.6, 0.8, 0.98), lw=2))
-        ax.text(x + 0.08, line1_y + 0.12, lab, ha="center", va="center", color=FG, fontsize=12, fontweight="bold")
+        # Center text vertically in the box
+        ax.text(x + 0.08, line1_y + 0.10, lab, ha="center", va="center", color=FG, fontsize=10, fontweight="bold")
         score = 0.55 + 0.35 * (0.5 + 0.5 * np.sin(2 * np.pi * (t + phase)))
         outs.append(score)
-        ax.text(x + 0.08, line1_y + 0.05, f"{score:.2f}", ha="center", va="center",
-                color=(0.75, 0.9, 1.0), fontsize=14)
+        ax.text(x + 0.08, line1_y + 0.03, f"{score:.2f}", ha="center", va="center",
+                color=(0.75, 0.9, 1.0), fontsize=12)
 
     # Line 2: Combine into ensemble (bottom row, centered)
+    # Final prediction = average of all 15 model predictions
     ens = float(np.mean(outs))
     ensemble_x = 0.5
     ensemble_y = 0.35
@@ -1893,7 +2700,9 @@ def scene6(ax, t):
         # Arrow from bottom of model box to top of ensemble box
         draw_arrow(ax, x + 0.08, line1_y, ensemble_x, ensemble_y + ensemble_height, alpha=0.65, lw=2.5)
 
-    ax.text(0.05, 0.20, "Goal: stable ranking across noise & conformers", color=(0.75, 0.78, 0.85), fontsize=12)
+    # Updated text to reflect 15 models total
+    ax.text(0.50, 0.20, "15 Models Total: Average of all predictions for robust scoring", 
+            color=(0.75, 0.78, 0.85), fontsize=12, ha="center")
 
 
 # -----------------------------
@@ -1912,8 +2721,33 @@ def scene7(ax, t):
     idx_unsorted = np.arange(n)
     idx_sorted = np.argsort(base_scores)[::-1]
 
-    # target y positions
-    y_positions = np.linspace(0.75, 0.18, n)
+    # target y positions with extra spacing between positions 7 and 8 (Ligand_08 and Ligand_09)
+    # Adjusted to maintain same total height with shorter bars (0.018 instead of 0.036)
+    # Original: top bar center 0.75, bottom bar center 0.18, bar height 0.036
+    # Original total height: (0.75 + 0.018) - (0.18 - 0.018) = 0.768 - 0.162 = 0.606
+    # New: bar height 0.018, so bar_offset = 0.009
+    # To maintain total height 0.606: (top_y + 0.009) - (bottom_y - 0.009) = 0.606
+    # So: top_y - bottom_y = 0.606 - 0.018 = 0.588
+    # Keep top_y = 0.75 (same top bar center), then bottom_y = 0.75 - 0.588 = 0.162
+    top_y = 0.75  # Top bar center (same as before)
+    bottom_y = 0.162  # Bottom bar center (adjusted to maintain total height: 0.75 - 0.588 = 0.162)
+    # Adjust position_7_y proportionally: original range was 0.75 to 0.18 (0.57), new range is 0.75 to 0.162 (0.588)
+    # Position 7 was at 0.42, which is (0.75 - 0.42) / (0.75 - 0.18) = 0.33 / 0.57 = 0.579 of the way down
+    # New position_7_y = 0.75 - 0.579 * (0.75 - 0.162) = 0.75 - 0.579 * 0.588 = 0.75 - 0.340 = 0.410
+    position_7_y = 0.75 - (0.75 - 0.42) / (0.75 - 0.18) * (0.75 - bottom_y)  # Proportionally adjusted
+    gap_size = 0.12  # Extra gap between position 7 and 8
+    position_8_y = position_7_y - gap_size  # Position 8 (9th ligand) - with gap
+    
+    # Create non-uniform spacing: compress top 8, add gap, then bottom 2
+    y_positions = np.zeros(n)
+    # Top 8 positions (0-7): compressed into smaller space (0.75 to 0.42)
+    for i in range(8):
+        y_positions[i] = top_y - i * (top_y - position_7_y) / 7.0
+    # Position 8 with extra gap
+    y_positions[8] = position_8_y
+    # Position 9 at bottom
+    y_positions[9] = bottom_y
+    
     # current permutation is a blend between unsorted and sorted
     blend = smoothstep(t)
 
@@ -1929,6 +2763,9 @@ def scene7(ax, t):
     x0 = 0.25
     maxw = 0.60
     y_top3_bottom = None  # Will store the y position below top 3
+    # Bar height reduced by 50%: 0.036 -> 0.018, so offset is 0.009
+    bar_height = 0.018  # 50% of original 0.036
+    bar_offset = 0.009  # Half of bar height
     
     for i in range(n):
         score = base_scores[i]
@@ -1938,21 +2775,21 @@ def scene7(ax, t):
         
         # Track the bottom of the 3rd ligand (sorted index 2)
         if sorted_pos == 2:
-            y_top3_bottom = y_cur[i] - 0.018  # Bottom of the 3rd ligand bar
+            y_top3_bottom = y_cur[i] - bar_offset  # Bottom of the 3rd ligand bar
         
         color = (0.6, 0.95, 0.85) if is_top and blend > 0.6 else (0.75, 0.9, 1.0)
         alpha = 0.95 if is_top else 0.75
 
         ax.text(0.06, y_cur[i], names[i], color=FG, fontsize=12, va="center")
-        ax.add_patch(plt.Rectangle((x0, y_cur[i] - 0.018), width, 0.036, color=color, alpha=alpha))
+        ax.add_patch(plt.Rectangle((x0, y_cur[i] - bar_offset), width, bar_height, color=color, alpha=alpha))
         ax.text(x0 + width + 0.01, y_cur[i], f"{score:.2f}", color=(0.85, 0.9, 1.0), fontsize=11, va="center")
     
     # Draw text below top 3 ligands and line below the text
     if y_top3_bottom is not None:
         # Text position: positioned right at the bottom of 3rd ligand (moved higher) to avoid overlap with 4th ligand
-        text_y = y_top3_bottom + 0.01  # Positioned at or slightly above the bottom of 3rd ligand bar
+        text_y = y_top3_bottom - 0.01  # Positioned at or slightly above the bottom of 3rd ligand bar
         ax.text(0.50, text_y, "Successfully Screened Candidates of Small Molecules above Threshold", 
-               color=(0.95, 0.85, 0.55), fontsize=13, fontweight="bold", 
+               color=(0.95, 0.85, 0.55), fontsize=8, fontweight="bold",  # Reduced by 50%: 13 -> 6.5
                ha="center", va="top", zorder=11)
         
         # Line position: below the text, moved down by 1 line spacing (approximately 0.04)
@@ -1969,38 +2806,64 @@ def scene7(ax, t):
 # Main render loop
 # -----------------------------
 def draw_scene(ax, scene_idx, t):
+    """Draw the appropriate scene based on scene index.
+    
+    New scene order:
+    - 0: Inputs (scene1)
+    - 1: Multi-Branch Encoding (scene2)
+    - 2: Cross-Attention (scene4) - was scene 3
+    - 3: Ensemble Prediction (scene6) - was scene 4
+    - 4: Ranked Output (scene7) - was scene 5
+    - 5: 2D to 3D Transition (scene5) - was scene 6
+    - 6: 2D to 3D Transition duplicate (scene8) - was scene 7
+    - 7: 3D Protein Pocket Matching (scene3) - was scene 2, now at end
+    """
     if scene_idx == 0:
         scene1(ax, t)
     elif scene_idx == 1:
         scene2(ax, t)
     elif scene_idx == 2:
-        scene3(ax, t)
+        scene4(ax, t)  # Cross-Attention scene (was scene 3)
     elif scene_idx == 3:
-        scene4(ax, t)  # Cross-Attention scene
+        scene6(ax, t)  # Ensemble prediction (was scene 4)
     elif scene_idx == 4:
-        scene6(ax, t)  # Ensemble prediction
+        scene7(ax, t)  # Output ranking (was scene 5)
     elif scene_idx == 5:
-        scene7(ax, t)  # Output ranking
+        scene5(ax, t)  # 2D to 3D transition scene (was scene 6)
     elif scene_idx == 6:
-        scene5(ax, t)  # 2D to 3D transition scene (moved to end)
+        scene8(ax, t)  # 2D to 3D transition scene duplicate (was scene 7)
+    elif scene_idx == 7:
+        scene3(ax, t)  # 3D Protein Pocket Matching (was scene 2, now at end)
     else:
         ax.text(0.5, 0.5, "Unknown scene", color=FG, ha="center", va="center")
 
 
 def main():
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='Generate HTS-3D explainer video animation')
+    parser.add_argument('--include-scene8', action='store_true',
+                        help='Include scene 8 (3D Protein Pocket Matching) at the end. Default: only generate first 7 scenes.')
+    args = parser.parse_args()
+    
+    include_scene8 = args.include_scene8
+    
+    # Set total frames based on whether scene 8 is included
+    total_frames = 800 if include_scene8 else 700
+    num_scenes = 8 if include_scene8 else 7
+    
     # Load subtitles
     subtitles = parse_srt_from_docx(SUBTITLE_PATH)
     print(f"Loaded {len(subtitles)} subtitles")
-    
-    # Find original scene 6 caption (to be used for scene 7) - unused variable, kept for compatibility
-    scene6_time = 55.0  # Scene 5 (Ensemble) now starts at frame 550 / 10 fps = 55 seconds
-    original_scene6_caption = get_subtitle_at_time(subtitles, scene6_time)
+    if include_scene8:
+        print("Generating all 8 scenes (including 3D Protein Pocket Matching at the end)")
+    else:
+        print("Generating first 7 scenes only (use --include-scene8 to add 3D Protein Pocket Matching)")
     
     writer = imageio.get_writer(OUT_PATH, fps=FPS, codec="libx264", quality=8)
     try:
-        for f in range(FRAMES):
-            s = scene_of_frame(f)
-            t = local_t(f)
+        for f in range(total_frames):
+            s = scene_of_frame(f, include_scene8)
+            t = local_t(f, include_scene8)
             time_seconds = f / FPS  # Current time in seconds
             
             fig, ax = setup_ax()
@@ -2008,33 +2871,37 @@ def main():
             
             # Add subtitle if available
             # Override for Scene 1: use first caption for entire scene
-            if s == 0:  # Scene 1 (0-indexed)
+            if s == 0:  # Scene 1 (Inputs)
                 if len(subtitles) > 0:
                     subtitle_text = subtitles[0]['text']  # Use first subtitle for entire scene 1
                     draw_subtitle(ax, subtitle_text)
             # Override for Scene 2 (Multi-Branch Encoding) with specific caption - smaller font
-            elif s == 1:  # Scene 2 (0-indexed)
+            elif s == 1:  # Scene 2 (Multi-Branch Encoding)
                 subtitle_text = "Each ligand is encoded in 3 complementary ways: chemical semantics using ChemBERTa, 2-D geometry using RDKit 2D features, and 3-D ligand conformers using RDKit 3D conformer generation."
                 draw_subtitle(ax, subtitle_text, fontsize=14)  # Reduced from 15 to 14
-            # Override for Scene 3 (3D Protein Pocket Matching) with specific caption (forced 2 lines)
-            elif s == 2:  # Scene 3 (0-indexed)
-                subtitle_text = "pocket detection: Uses geometric/concavity analysis to find cavities\nDruggability scoring: Each pocket scored 0-1 based on residue composition"
-                draw_subtitle(ax, subtitle_text)
-            # Override for Scene 4 (Cross-Attention) - forced 2 lines
-            elif s == 3:  # Scene 4 (0-indexed)
+            # Override for Scene 3 (Cross-Attention) - forced 2 lines
+            elif s == 2:  # Scene 3 (Cross-Attention) - was scene 4
                 subtitle_text = "Cross-attention then links ligand features with pocket residues, \nallowing the model to focus on the most relevant molecular interactions."
                 draw_subtitle(ax, subtitle_text)
-            # Override for Scene 5 (Ensemble Prediction) - using "Multiple predictive models..." caption
-            elif s == 4:  # Scene 5 (0-indexed)
+            # Override for Scene 4 (Ensemble Prediction) - using "Multiple predictive models..." caption
+            elif s == 3:  # Scene 4 (Ensemble Prediction) - was scene 5
                 subtitle_text = "Multiple predictive models evaluate each complex and their outputs are combined through an ensemble for robust scoring"
                 draw_subtitle(ax, subtitle_text)
-            # Override for Scene 6 (Ranked Output) - specific caption (forced two lines)
-            elif s == 5:  # Scene 6 (0-indexed)
+            # Override for Scene 5 (Ranked Output) - specific caption (forced two lines)
+            elif s == 4:  # Scene 5 (Ranked Output) - was scene 6
                 subtitle_text = "The result is a ranked list of compounds by predicted binding affinity, \nenabling rapid selection of top candidates for downstream validation."
                 draw_subtitle(ax, subtitle_text)
-            # Override for Scene 7 (2D to 3D Transition) with specific caption
-            elif s == 6:  # Scene 7 (0-indexed)
-                subtitle_text = "World's 1st platform of HTS of small molecules using 3D/4Branch matching, a breakthrough from current SOTA of 2D architecture(08/2025)"
+            # Override for Scene 6 (2D to 3D Transition) with specific caption
+            elif s == 5:  # Scene 6 (2D to 3D Transition) - was scene 7
+                subtitle_text = "HTS-3D can screen millions of compounds in weeks, \n many times faster and cost-effective than prior art"
+                draw_subtitle(ax, subtitle_text)
+            # Override for Scene 7 (2D to 3D Transition duplicate) with specific caption
+            elif s == 6:  # Scene 7 (2D to 3D Transition duplicate) - was scene 8
+                subtitle_text = "World's 1st platform of HTS of compounds using 3D/4Branch matching,\n a breakthrough from current SOTA of 2D architecture"
+                draw_subtitle(ax, subtitle_text)
+            # Override for Scene 8 (3D Protein Pocket Matching) with specific caption (forced 2 lines)
+            elif s == 7:  # Scene 8 (3D Protein Pocket Matching) - was scene 2, now at end
+                subtitle_text = "pocket detection: Uses geometric/concavity analysis to find cavities\nDruggability scoring: Each pocket scored 0-1 based on residue composition"
                 draw_subtitle(ax, subtitle_text)
             else:
                 subtitle_text = get_subtitle_at_time(subtitles, time_seconds)
@@ -2045,7 +2912,7 @@ def main():
             writer.append_data(frame)
             plt.close(fig)
             if f % 50 == 0:
-                print(f"Rendered frame {f}/{FRAMES} (scene {s+1}/7)")
+                print(f"Rendered frame {f}/{total_frames} (scene {s+1}/{num_scenes})")
     finally:
         writer.close()
     print(f"Done. Wrote: {OUT_PATH}")
