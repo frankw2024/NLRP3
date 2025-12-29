@@ -6,7 +6,98 @@ Creates both 2D and 3D molecular visualizations:
 - Side-by-side comparison of both images
 
 Based on specifications from HTS3Danim.docx
+
+GPU Acceleration:
+  This script uses GPU acceleration when CuPy is available. All numerical computations
+  (array operations, trigonometric functions, matrix multiplications) run on GPU.
+  Data is automatically transferred to CPU only when needed for matplotlib rendering
+  or RDKit operations (which require CPU).
+  
+  To enable GPU acceleration:
+    pip install cupy-cuda11x  # For CUDA 11.x
+    # or
+    pip install cupy-cuda12x  # For CUDA 12.x
+  
+  The script will automatically detect and use GPU if available, falling back to CPU
+  (NumPy) if CuPy is not installed or no GPU is available.
 """
+
+import numpy as np
+import sys
+
+# Device detection following HTS_3D.py pattern
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
+
+def detect_device():
+    """
+    Detect available device (CUDA, MPS, or CPU) following HTS_3D.py pattern.
+    Returns device type string.
+    """
+    if HAS_TORCH:
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+            device_name = torch.cuda.get_device_name(device)
+            print(f"[device] Using CUDA GPU: {device_name}")
+            return "cuda"
+        if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+            print("[device] Using Apple MPS backend")
+            return "mps"
+    
+    print("[device] Using CPU")
+    return "cpu"
+
+# Detect device
+DEVICE_TYPE = detect_device()
+
+# GPU support: Try to import CuPy for GPU acceleration (works with CUDA)
+# Note: CuPy only works with CUDA, not MPS
+USE_GPU = False
+xp = np  # Default to NumPy
+cp = None
+
+if DEVICE_TYPE == "cuda":
+    # Try to use CuPy for GPU-accelerated NumPy operations
+    try:
+        import cupy as cp
+        # Verify CUDA is actually available in CuPy
+        if cp.cuda.runtime.getDeviceCount() > 0:
+            USE_GPU = True
+            xp = cp  # Use CuPy for GPU arrays
+            device_name = cp.cuda.runtime.getDeviceProperties(0)['name'].decode()
+            print(f"[device] CuPy GPU acceleration enabled: {device_name}")
+        else:
+            print("[device] CuPy available but no CUDA devices found, using CPU (NumPy)")
+    except ImportError:
+        print("[device] CuPy not available. Install for GPU acceleration: pip install cupy-cuda11x")
+    except Exception as e:
+        print(f"[device] CuPy initialization failed: {e}, using CPU (NumPy)")
+elif DEVICE_TYPE == "mps":
+    # MPS (Apple Silicon) detected, but CuPy doesn't support MPS
+    print("[device] MPS detected but CuPy doesn't support MPS, using CPU (NumPy)")
+
+# Helper function to convert GPU arrays to CPU (NumPy) arrays for matplotlib/RDKit
+def to_cpu(arr):
+    """Convert array to CPU (NumPy) format."""
+    if USE_GPU and hasattr(arr, 'get'):  # CuPy array
+        return arr.get()
+    return arr
+
+# Helper function to convert CPU arrays to GPU if available
+def to_gpu(arr):
+    """Convert array to GPU (CuPy) format if available."""
+    if USE_GPU and cp is not None:
+        return cp.asarray(arr)
+    return arr
+
+# Constants for GPU compatibility
+if USE_GPU:
+    PI = xp.pi
+else:
+    PI = np.pi
 
 from rdkit import Chem
 from rdkit.Chem import Draw, AllChem, Descriptors
@@ -16,7 +107,6 @@ matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-import numpy as np
 from matplotlib.colors import LinearSegmentedColormap
 try:
     from PIL import Image
@@ -261,17 +351,21 @@ def create_3d_pocket_matching_visualization(smiles=None, output_path='image2_3d_
     fig.patch.set_facecolor('white')
     ax = fig.add_subplot(111, projection='3d')
     
-    # Draw protein surface (simplified as ellipsoid)
-    u = np.linspace(0, 2 * np.pi, 30)
-    v = np.linspace(0, np.pi, 20)
-    x_surf = 8 * np.outer(np.cos(u), np.sin(v))
-    y_surf = 10 * np.outer(np.sin(u), np.sin(v))
-    z_surf = 8 * np.outer(np.ones(np.size(u)), np.cos(v))
+    # Draw protein surface (simplified as ellipsoid) - GPU-accelerated
+    u = xp.linspace(0, 2 * PI, 30)
+    v = xp.linspace(0, PI, 20)
+    x_surf = 8 * xp.outer(xp.cos(u), xp.sin(v))
+    y_surf = 10 * xp.outer(xp.sin(u), xp.sin(v))
+    z_surf = 8 * xp.outer(xp.ones(xp.size(u)), xp.cos(v))
     
     # Create cavity in surface (subtract inner ellipsoid)
-    x_cavity = 4 * np.outer(np.cos(u), np.sin(v))
-    y_cavity = 5 * np.outer(np.sin(u), np.sin(v))
-    z_cavity = 4 * np.outer(np.ones(np.size(u)), np.cos(v))
+    x_cavity = 4 * xp.outer(xp.cos(u), xp.sin(v))
+    y_cavity = 5 * xp.outer(xp.sin(u), xp.sin(v))
+    z_cavity = 4 * xp.outer(xp.ones(xp.size(u)), xp.cos(v))
+    
+    # Convert to CPU for matplotlib
+    x_surf, y_surf, z_surf = to_cpu(x_surf), to_cpu(y_surf), to_cpu(z_surf)
+    x_cavity, y_cavity, z_cavity = to_cpu(x_cavity), to_cpu(y_cavity), to_cpu(z_cavity)
     
     # Draw protein surface (semi-transparent)
     ax.plot_surface(x_surf, y_surf, z_surf, alpha=0.2, color=(0.3, 0.5, 0.8), shade=True)
@@ -305,28 +399,32 @@ def create_3d_pocket_matching_visualization(smiles=None, output_path='image2_3d_
                    [ligand_atoms_scaled[i, 2], ligand_atoms_scaled[j, 2]],
                    'k-', linewidth=2, alpha=0.7)
     
-    # Draw polar residues (blue/red spheres around pocket)
+    # Draw polar residues (blue/red spheres around pocket) - GPU-accelerated
     n_polar = 8
+    angles_polar = xp.linspace(0, 2 * PI * (n_polar - 1) / n_polar, n_polar)
+    r = 6
+    x_p = 2 + r * xp.cos(angles_polar)
+    y_p = 1 + r * xp.sin(angles_polar)
+    z_p = 0.5 * xp.sin(angles_polar * 2)
+    x_p, y_p, z_p = to_cpu(x_p), to_cpu(y_p), to_cpu(z_p)
+    
     for i in range(n_polar):
-        angle = 2 * np.pi * i / n_polar
-        r = 6
-        x_p = 2 + r * np.cos(angle)
-        y_p = 1 + r * np.sin(angle)
-        z_p = 0.5 * np.sin(angle * 2)
         color = (0.9, 0.7, 0.4) if i % 2 == 0 else (0.4, 0.7, 0.9)  # Orange/Blue
-        ax.scatter([x_p], [y_p], [z_p], s=300, c=[color], alpha=0.6, 
+        ax.scatter([x_p[i]], [y_p[i]], [z_p[i]], s=300, c=[color], alpha=0.6, 
                   edgecolors='black', linewidths=1)
     
-    # Draw charged residues (red/blue, further out)
+    # Draw charged residues (red/blue, further out) - GPU-accelerated
     n_charged = 6
+    angles_charged = xp.linspace(0, 2 * PI * (n_charged - 1) / n_charged, n_charged) + PI/4
+    r = 8
+    x_c = 2 + r * xp.cos(angles_charged)
+    y_c = 1 + r * xp.sin(angles_charged)
+    z_c = 0.3 * xp.sin(angles_charged * 3)
+    x_c, y_c, z_c = to_cpu(x_c), to_cpu(y_c), to_cpu(z_c)
+    
     for i in range(n_charged):
-        angle = 2 * np.pi * i / n_charged + np.pi/4
-        r = 8
-        x_c = 2 + r * np.cos(angle)
-        y_c = 1 + r * np.sin(angle)
-        z_c = 0.3 * np.sin(angle * 3)
         color = (0.9, 0.4, 0.4) if i % 2 == 0 else (0.4, 0.4, 0.9)  # Red/Blue
-        ax.scatter([x_c], [y_c], [z_c], s=250, c=[color], alpha=0.5,
+        ax.scatter([x_c[i]], [y_c[i]], [z_c[i]], s=250, c=[color], alpha=0.5,
                   edgecolors='black', linewidths=1)
     
     # Set viewing angle
