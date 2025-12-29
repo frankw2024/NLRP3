@@ -731,7 +731,7 @@ def run_app():
             
             # Identify SMILES column
             smiles_col = None
-            possible_cols = ['SMILES', 'Smiles', 'smiles', 'SMILE', 'Smile', 'smile', 'Structure']
+            possible_cols = ['SMILES', 'Smiles', 'smiles', 'SMILE', 'Smile', 'smile', 'Structure', 'canonical_smiles']
             
             for col in possible_cols:
                 if col in df.columns:

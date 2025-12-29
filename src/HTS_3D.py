@@ -608,6 +608,27 @@ def build_protein_template_from_pockets(
     return templates
 
 
+# 7ALV (NLRP3 + MCC950) pocket template
+# Extracted from src/7alv.pdb (residues within 5A of ligand)
+POCKET_TEMPLATE_7ALV = [
+    # residue_name, charge, hydrophobicity (Kyte-Doolittle), xyz (nm)
+    ("TYR168", 0.0, -1.3, (2.8, 3.6, 14.3)),
+    ("THR169", 0.0, -0.7, (3.0, 3.8, 14.1)),
+    ("ALA227", 0.0, 1.8, (1.7, 3.8, 13.0)),
+    ("ALA228", 0.0, 1.8, (1.6, 3.4, 13.2)),
+    ("GLY229", 0.0, -0.4, (1.9, 3.3, 13.3)),
+    ("ILE230", 0.0, 4.5, (2.1, 3.7, 13.3)),
+    ("GLY231", 0.0, -0.4, (2.1, 3.7, 13.7)),
+    ("LYS232", 1.0, -3.9, (1.7, 3.9, 13.8)),
+    ("THR233", 0.0, -0.7, (1.7, 3.6, 14.1)),
+    ("ILE234", 0.0, 4.5, (2.0, 3.6, 14.2)),
+    ("ARG351", 1.0, -4.5, (1.2, 3.9, 13.1)),
+    ("PRO412", 0.0, -1.6, (2.5, 3.4, 13.4)),
+    ("LEU413", 0.0, 3.8, (2.3, 3.1, 13.4)),
+    ("TRP416", 0.0, -0.9, (2.7, 2.8, 13.5)),
+    ("GLU629", -1.0, -3.5, (1.3, 3.6, 11.8)),
+]
+
 # Legacy support: Default NLRP3 pocket template for backward compatibility
 POCKET_TEMPLATE_NLRP3 = [
     # residue_name, charge, hydrophobicity (Kyte-Doolittle), xyz (nm)
@@ -629,8 +650,8 @@ POCKET_TEMPLATE_NLRP3 = [
     ("MET461", 0.0, 1.9, (3.5, 0.1, 1.9)),
 ]
 
-# Default: Use NLRP3 template for backward compatibility
-PROTEIN_TEMPLATES = build_protein_template_from_pockets([POCKET_TEMPLATE_NLRP3])
+# Default: Use 7ALV template
+PROTEIN_TEMPLATES = build_protein_template_from_pockets([POCKET_TEMPLATE_7ALV])
 
 
 # --- Dataset -----------------------------------------------------------------
@@ -1426,7 +1447,7 @@ if __name__ == "__main__":
     try:
         # Can optionally pass protein_pdb_path for custom protein structures
         # Example: main(protein_pdb_path=Path("path/to/protein.pdb"), max_pockets=5)
-        main()  # Uses default NLRP3 template
+        main()  # Defaults to 7ALV template
     except KeyboardInterrupt:
         print("Interrupted.", file=sys.stderr)
         sys.exit(1)
