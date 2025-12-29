@@ -22,6 +22,7 @@ Outputs (saved to `output/` directory):
 
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import os
@@ -267,30 +268,74 @@ def load_activity_table(csv_path: Path) -> pd.DataFrame:
     if not csv_path.exists():
         raise FileNotFoundError(f"CSV not found: {csv_path}")
     df = pd.read_csv(csv_path)
-    df["standard_value"] = df["standard_value"].apply(ensure_float)
-    df = df.dropna(subset=["canonical_smiles", "standard_value"])
+    
+    # Normalize SMILES column name - check for common variations
+    smiles_col = None
+    possible_smiles_cols = ['canonical_smiles', 'SMILES', 'Smiles', 'smiles', 'SMILE', 'Smile', 'smile', 'Structure']
+    for col in possible_smiles_cols:
+        if col in df.columns:
+            smiles_col = col
+            break
+    
+    if smiles_col is None:
+        raise ValueError(f"No SMILES column found. Expected one of: {possible_smiles_cols}. Found columns: {df.columns.tolist()}")
+    
+    # Rename to canonical_smiles for consistency
+    if smiles_col != "canonical_smiles":
+        df["canonical_smiles"] = df[smiles_col]
+    
+    # Check if this CSV has activity data (standard_value column)
+    has_activity_data = "standard_value" in df.columns
+    
+    if has_activity_data:
+        # Original NLRP3 activity data processing
+        df["standard_value"] = df["standard_value"].apply(ensure_float)
+        df = df.dropna(subset=["canonical_smiles", "standard_value"])
 
-    # Normalize units → nM
-    df["standard_units"] = df["standard_units"].str.lower().fillna("")
-    df["value_nM"] = df.apply(
-        lambda row: row["standard_value"] * 1000
-        if row["standard_units"] == "um"
-        else row["standard_value"],
-        axis=1,
-    )
-    df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=["value_nM"])
+        # Normalize units → nM
+        df["standard_units"] = df["standard_units"].str.lower().fillna("")
+        df["value_nM"] = df.apply(
+            lambda row: row["standard_value"] * 1000
+            if row["standard_units"] == "um"
+            else row["standard_value"],
+            axis=1,
+        )
+        df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=["value_nM"])
 
-    # Binary labels: active if <= 1000 nM (approx sub-micromolar)
-    df["label"] = (df["value_nM"] <= 1_000).astype(int)
+        # Binary labels: active if <= 1000 nM (approx sub-micromolar)
+        df["label"] = (df["value_nM"] <= 1_000).astype(int)
 
-    # Dedupe by molecule id keeping best potency
-    df = (
-        df.sort_values("value_nM")
-        .groupby("molecule_chembl_id", as_index=False)
-        .first()
-    )
-    df = df.reset_index(drop=True)
-    print(f"[data] molecules: {len(df)}, actives: {df['label'].sum()}")
+        # Dedupe by molecule id keeping best potency
+        if "molecule_chembl_id" in df.columns:
+            df = (
+                df.sort_values("value_nM")
+                .groupby("molecule_chembl_id", as_index=False)
+                .first()
+            )
+        df = df.reset_index(drop=True)
+        print(f"[data] molecules: {len(df)}, actives: {df['label'].sum()}")
+    else:
+        # CSV without activity data - create placeholder labels for training
+        # Only keep rows with valid SMILES
+        df = df.dropna(subset=["canonical_smiles"])
+        
+        # Create placeholder activity columns
+        # Set all labels to 0 (inactive) as default since we don't have activity data
+        df["standard_value"] = np.nan
+        df["standard_units"] = ""
+        df["value_nM"] = np.nan
+        df["label"] = 0
+        
+        # Ensure molecule_chembl_id exists (create if missing)
+        if "molecule_chembl_id" not in df.columns:
+            df["molecule_chembl_id"] = [f"COMPOUND_{i}" for i in range(len(df))]
+        
+        # Dedupe by molecule id
+        df = df.groupby("molecule_chembl_id", as_index=False).first()
+        df = df.reset_index(drop=True)
+        print(f"[data] molecules: {len(df)} (no activity data, labels set to 0 for training)")
+        print(f"[data] WARNING: Using placeholder labels since no activity data found in CSV")
+    
     return df
 
 
@@ -1213,6 +1258,7 @@ def load_protein_structure_from_pdb(
 
 
 def main(
+    csv_path: Optional[Path] = None,
     protein_pdb_path: Optional[Path] = None,
     max_pockets: int = 5
 ):
@@ -1220,17 +1266,23 @@ def main(
     Main training function with support for arbitrary protein structures.
     
     Args:
+        csv_path: Optional path to activity CSV file.
+                 If None, uses default CSV_PATH (nlrp3_chembl_activities.csv).
         protein_pdb_path: Optional path to PDB file for protein structure.
                          If None, uses default NLRP3 pocket template.
         max_pockets: Maximum number of pockets to detect from protein structure.
     """
+    # Use default CSV path if not specified
+    if csv_path is None:
+        csv_path = CSV_PATH
+    
     CACHE_DIR.mkdir(exist_ok=True)
-    print(f"[debug] looking for CSV at {CSV_PATH.resolve()}")
-    if not CSV_PATH.exists():
-        print(f"[debug] CSV missing: {CSV_PATH.resolve()}")
+    print(f"[debug] looking for CSV at {csv_path.resolve()}")
+    if not csv_path.exists():
+        print(f"[debug] CSV missing: {csv_path.resolve()}")
     else:
-        print(f"[debug] CSV present: {CSV_PATH.resolve()} (size={CSV_PATH.stat().st_size} bytes)")
-    df = load_activity_table(CSV_PATH)
+        print(f"[debug] CSV present: {csv_path.resolve()} (size={csv_path.stat().st_size} bytes)")
+    df = load_activity_table(csv_path)
     
     # Load protein structure and detect pockets
     if protein_pdb_path and protein_pdb_path.exists():
@@ -1445,9 +1497,42 @@ def main(
 
 if __name__ == "__main__":
     try:
+        parser = argparse.ArgumentParser(
+            description="HTS_3D: Cross-attention HTS pipeline with 3D-aware ligand and protein pocket encoding",
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            epilog="""
+Examples:
+  # Use default NLRP3 activities CSV and template:
+  python HTS_3D.py
+  
+  # Use custom compounds CSV file:
+  python HTS_3D.py --compounds chembl_random_compounds.csv
+  
+  # Use custom compounds with full path:
+  python HTS_3D.py --compounds C:\\Users\\xiaon\\source\\repos\\NLRP3A\\chembl_random_compounds.csv
+            """
+        )
+        
+        parser.add_argument(
+            "--compounds",
+            type=str,
+            default=None,
+            help=f"Path to compounds/activities CSV file. If not specified, uses default: {CSV_PATH}"
+        )
+        
+        args = parser.parse_args()
+        
+        # Convert compounds path to Path object if provided
+        csv_path = None
+        if args.compounds:
+            csv_path = Path(args.compounds)
+            if not csv_path.is_absolute():
+                # If relative path, make it relative to project root
+                csv_path = PROJECT_ROOT / csv_path
+        
         # Can optionally pass protein_pdb_path for custom protein structures
-        # Example: main(protein_pdb_path=Path("path/to/protein.pdb"), max_pockets=5)
-        main()  # Defaults to 7ALV template
+        # Example: main(csv_path=Path("compounds.csv"), protein_pdb_path=Path("path/to/protein.pdb"), max_pockets=5)
+        main(csv_path=csv_path)  # Defaults to NLRP3 template and CSV_PATH
     except KeyboardInterrupt:
         print("Interrupted.", file=sys.stderr)
         sys.exit(1)

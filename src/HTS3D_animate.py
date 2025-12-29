@@ -2467,7 +2467,7 @@ def scene8(ax, t):
     
     # Load and calculate aspect ratio for HTS 3D image ONCE at the beginning
     # This ensures consistent sizing throughout all phases to avoid visual jumps
-    hts3d_image_path = SCRIPT_DIR / "nlrp3" / "panel_A_nlrp3_alone.png"
+    hts3d_image_path = SCRIPT_DIR / "nlrp3" / "proteinLigand1.png"
     pocket_cx, pocket_cy = 0.78, 0.50  # Moved further right from 0.70 to 0.78
     hts3d_image_width = 0.57  # 1.5x larger: 0.38 * 1.5 = 0.57
     hts3d_image_height = 0.57  # Default, will be recalculated if image exists
@@ -2477,8 +2477,11 @@ def scene8(ax, t):
         try:
             import matplotlib.image as mpimg
             hts3d_img = mpimg.imread(str(hts3d_image_path))
+            
+            # Make background transparent to blend with dark theme
+            hts3d_img = make_background_transparent(hts3d_img, color_tolerance=0.05)
+            
             # Calculate aspect ratio to preserve original image proportions
-            # img.shape is [height, width, channels]
             img_height, img_width = hts3d_img.shape[:2]
             aspect_ratio = img_width / img_height
             hts3d_image_height = hts3d_image_width / aspect_ratio  # Adjust height based on aspect ratio
