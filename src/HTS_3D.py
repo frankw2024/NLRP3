@@ -13,7 +13,7 @@ Key ideas mandated by `codeGenNLRP3.docx`:
       ligand atom/token can attend to the residues that matter most.
     * Feed the interaction-aware representation + RDKit descriptors into a classifier.
 
-Input: `nlrp3_chembl_activities.csv`
+Input: `nlrp3_chembl_activities_with15positives.csv`
 Outputs (saved to `output/` directory):
     * `hts3d_model.pt`          – best PyTorch weights (no timestamp).
     * `hts3d_predictions_YYYYMMDD_HHMMSS.csv`   – validation predictions (with timestamp).
@@ -120,7 +120,7 @@ PROJECT_ROOT = SCRIPT_DIR.parent.resolve()
 
 # Paths relative to script location (src/)
 # Default CSV path for NLRP3
-DEFAULT_CSV_PATH_NLRP3 = SCRIPT_DIR / "nlrp3_chembl_activities.csv"
+DEFAULT_CSV_PATH_NLRP3 = SCRIPT_DIR / "nlrp3_chembl_activities_with15positives.csv"
 # Output directory in project root
 OUTPUT_DIR = PROJECT_ROOT / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -682,10 +682,18 @@ def maccs_fp(smiles: str) -> np.ndarray:
     return array
 
 
-def physchem_features(smiles: str) -> np.ndarray:
+# QED scaling: HTS3DOracle gives QED 40-60% weight in method-specific predictions
+# (lasso: 0.4*qed, pca: 0.5*qed, mutual_info: 0.6*qed). HTS_3D dilutes QED among
+# 12 physchem + 3D + ChemBERTa. Scale QED so it has comparable influence (default 3.0).
+QED_SCALE_FACTOR = 3.0
+
+
+def physchem_features(smiles: str, qed_scale: float = QED_SCALE_FACTOR) -> np.ndarray:
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return np.zeros(12, dtype=np.float32)
+    qed_raw = QED.qed(mol)
+    qed_scaled = float(np.clip(qed_raw * qed_scale, 0.0, 3.0))  # Cap at 3.0 to avoid outlier domination
     feats = np.array(
         [
             Descriptors.MolWt(mol),
@@ -699,7 +707,7 @@ def physchem_features(smiles: str) -> np.ndarray:
             Descriptors.HeavyAtomCount(mol),
             Lipinski.NumHeteroatoms(mol),
             Descriptors.FractionCSP3(mol),
-            QED.qed(mol),
+            qed_scaled,
         ],
         dtype=np.float32,
     )
@@ -707,16 +715,36 @@ def physchem_features(smiles: str) -> np.ndarray:
     return feats
 
 
-def build_rdkit_feature_matrix(smiles_list: List[str]) -> torch.Tensor:
+def compute_qed_for_smiles_list(smiles_list: List[str]) -> np.ndarray:
+    """Compute QED (0-1) for each SMILES. Returns array of same length as input."""
+    qed_values = np.zeros(len(smiles_list), dtype=np.float32)
+    for i, smi in enumerate(smiles_list):
+        try:
+            mol = Chem.MolFromSmiles(smi) if isinstance(smi, str) else None
+            if mol is not None:
+                q = QED.qed(mol)
+                qed_values[i] = float(np.clip(q, 0.0, 1.0)) if not (np.isnan(q) or np.isinf(q)) else 0.0
+            else:
+                qed_values[i] = 0.0
+        except Exception:
+            qed_values[i] = 0.0
+    return qed_values
+
+
+def build_rdkit_feature_matrix(
+    smiles_list: List[str],
+    qed_scale: float = QED_SCALE_FACTOR,
+) -> torch.Tensor:
     """
     Build RDKit 2D feature matrix and return as GPU tensor if available.
     RDKit operations must run on CPU, but result is moved to GPU.
+    qed_scale: Scale factor for QED in physchem features (default 3.0 for HTS-like impact).
     """
     import sys
     warning_budget = 3
     rdkit_rows = []
     total = len(smiles_list)
-    print(f"[RDKit 2D] Processing {total} molecules...")
+    print(f"[RDKit 2D] Processing {total} molecules... (qed_scale={qed_scale})")
     sys.stdout.flush()
     for idx, smi in enumerate(tqdm(smiles_list, desc="RDKit 2D features"), 1):
         if warning_budget > 0:
@@ -724,7 +752,7 @@ def build_rdkit_feature_matrix(smiles_list: List[str]) -> torch.Tensor:
             warning_budget -= 1
         fp = morgan_fp(smi)
         maccs = maccs_fp(smi)  # Add MACCS keys
-        phys = physchem_features(smi)
+        phys = physchem_features(smi, qed_scale=qed_scale)
         rdkit_rows.append(np.concatenate([fp, maccs, phys]))
         # Print progress every 10% or every 100 molecules (whichever is more frequent)
         if idx % max(1, total // 10) == 0 or idx % 100 == 0:
@@ -3103,13 +3131,15 @@ def main(
         use_cd28: bool = False,
         use_ultra: bool = False,
         ensemble_strategy: str = "oof",
+        qed_scale: float = QED_SCALE_FACTOR,
+        qed_blend_weight: float = 0.2,
 ):
     """
     Main training function with support for arbitrary protein structures.
     
     Args:
         csv_path: Optional path to activity CSV file.
-                 If None and not use_cd28, uses default CSV path (nlrp3_chembl_activities.csv).
+                 If None and not use_cd28, uses default CSV path (nlrp3_chembl_activities_with15positives.csv).
         protein_pdb_path: Optional path to PDB file for protein structure.
                          If None, uses default NLRP3 pocket template.
         max_pockets: Maximum number of pockets to detect from protein structure.
@@ -3129,6 +3159,9 @@ def main(
                           robust generalization (default). "full" = run all models with per-model
                           selector → sharpest scores. "hts" = emulate HTS.py: loop by method, use
                           fold 0's selector for all 5 folds, avg 5 folds then 3 methods → smoother.
+        qed_scale: Scale factor for QED in physchem features (default 3.0; HTS3DOracle uses 40-60% QED).
+        qed_blend_weight: Blend ensemble predictions with QED (0-1). 0.2 matches HTS3DOracle
+                         make_varied_predictions (score += qed * 0.2). Set 0 to disable.
     """
     # Explicit CUDA availability test and device setup
     global DEVICE, NON_BLOCKING, PIN_MEMORY
@@ -3239,7 +3272,7 @@ def main(
     
         print("[debug] generating RDKit 2D features")
         sys.stdout.flush()
-        rdkit_feats_gpu = build_rdkit_feature_matrix(smiles)  # Already on GPU if available
+        rdkit_feats_gpu = build_rdkit_feature_matrix(smiles, qed_scale=qed_scale)  # Already on GPU if available
         print(f"[debug] RDKit features shape: {rdkit_feats_gpu.shape}, device: {rdkit_feats_gpu.device}")
         sys.stdout.flush()
         
@@ -4120,6 +4153,7 @@ def main(
                     del model
                     if DEVICE.type == "cuda":
                         torch.cuda.empty_cache()
+
                 n_used = len(fold_preds_list)
                 if not fold_preds_list:
                     print(f"[ensemble] WARNING: No matching folds for {feature_method} (rdkit_dim mismatch), using zeros")
@@ -4229,6 +4263,16 @@ def main(
                 else:
                     print(f"[ensemble] All predictions are zero, using small random values as fallback")
                     ensemble_predictions[prediction_counts == 0] = np.random.uniform(0.01, 0.05, size=samples_without_predictions)
+        
+        # Blend with QED for HTS.py-like drug-likeness influence (higher QED → higher score)
+        if qed_blend_weight > 0:
+            qed_values = compute_qed_for_smiles_list(smiles)
+            ensemble_predictions = (
+                (1.0 - qed_blend_weight) * ensemble_predictions
+                + qed_blend_weight * qed_values
+            ).astype(np.float64)
+            ensemble_predictions = np.clip(ensemble_predictions, 0.0, 1.0)
+            print(f"[ensemble] QED blend applied: weight={qed_blend_weight:.2f} (HTS3DOracle drug-likeness)")
         
         # Find best model across all folds and methods for saving
         best_overall_auc = float("-inf")
@@ -4580,6 +4624,20 @@ Examples:
             help="Ensemble strategy: 'oof' = out-of-fold only, 3 preds/sample, true CV (default). 'full' = all 15 models, per-model selector, sharpest. 'hts' = emulate HTS.py: loop by method, fold 0 selector for all folds, avg 5 then 3 → smoother. Default: oof"
         )
         
+        parser.add_argument(
+            "--qed-scale",
+            type=float,
+            default=QED_SCALE_FACTOR,
+            help=f"Scale factor for QED in physchem features (default: {QED_SCALE_FACTOR}). HTS3DOracle uses 40-60% QED in method-specific predictions."
+        )
+        
+        parser.add_argument(
+            "--qed-blend",
+            type=float,
+            default=0.2,
+            help="Blend ensemble predictions with QED (0-1). 0.2 matches HTS3DOracle make_varied_predictions. Use 0 to disable."
+        )
+        
         args = parser.parse_args()
         
         # Convert compounds path to Path object if provided
@@ -4646,6 +4704,8 @@ Examples:
             use_cd28=args.cd28,
             use_ultra=args.ultra,
             ensemble_strategy=args.ensemble,
+            qed_scale=args.qed_scale,
+            qed_blend_weight=args.qed_blend,
         )
     except KeyboardInterrupt:
         print("Interrupted.", file=sys.stderr)

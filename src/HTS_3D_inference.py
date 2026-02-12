@@ -42,6 +42,7 @@ from HTS_3D import (
     PROTEIN_TEMPLATES,
     build_3d_cache,
     build_rdkit_feature_matrix,
+    compute_qed_for_smiles_list,
     detect_compound_from_csv_path,
     detect_device,
     find_latest_checkpoint,
@@ -389,6 +390,13 @@ Examples:
     )
 
     parser.add_argument(
+        "--qed-blend",
+        type=float,
+        default=0.2,
+        help="Blend predictions with QED (0-1). 0.2 matches HTS_3D training (HTS3DOracle drug-likeness). Use 0 to disable."
+    )
+
+    parser.add_argument(
         "--checkpoint",
         type=str,
         default=None,
@@ -557,6 +565,13 @@ Examples:
     predictions = predict_on_smiles(
         model, smiles_list, scaler=scaler, selector=selector, batch_size=batch_size
     )
+    
+    # Blend with QED for HTS.py-like drug-likeness impact (match HTS_3D training)
+    if args.qed_blend > 0:
+        qed_values = compute_qed_for_smiles_list(smiles_list)
+        predictions = (1.0 - args.qed_blend) * predictions + args.qed_blend * qed_values
+        predictions = np.clip(predictions, 0.0, 1.0)
+        print(f"[inference] QED blend applied: weight={args.qed_blend:.2f}")
     
     # Create results dataframe (matching training script format)
     results_df = df.copy()
