@@ -210,9 +210,9 @@ FPS = 10
 DURATION_S = 70  # Scene 3 (2D to 3D) is 18s, Scene 4 (Cross-Attention) is 7s, Scene 5 is 5s
 W, H = 1280, 720
 DPI = 100
-# Default: 7 scenes (700 frames). With --include-scene8: 8 scenes (800 frames)
-# Scene order: 0=Inputs, 1=Multi-Branch, 2=Cross-Attention, 3=Ensemble, 4=Ranked, 5=2D-to-3D, 6=2D-to-3D-duplicate, 7=3D-Pocket-Matching (optional)
-FRAMES = 700  # Default: first 7 scenes only. Use --include-scene8 to generate all 8 scenes.
+# Default: 7 scenes (0-6, 700 frames). With --include-pocket-detection: 8 scenes (0-6, 8, 800 frames)
+# Scene order: 0=Inputs, 1=Multi-Branch, 2=Cross-Attention, 3=Ensemble, 4=Ranked Output, 5=2D to 3D Transition, 6=SOTA Comparison, 8=Pocket Detection (optional)
+FRAMES = 600  # Default. Use --include-pocket-detection to add the final scene.
 
 SCENE_LEN_S = 10  # Doubled from 5 to match 2x slower animation
 SCENE_FRAMES = FPS * SCENE_LEN_S  # 100 frames/scene (doubled from 50)
@@ -245,82 +245,35 @@ def smoothstep(t):
     return to_cpu(result) if USE_GPU and not isinstance(t, (list, tuple)) else float(result)
 
 
-def scene_of_frame(f, include_scene8=False):
+def scene_of_frame(f, include_pocket=False):
     """Determine which scene a frame belongs to.
     
-    New scene order:
-    - Scene 0: Inputs (100 frames: 0-99)
-    - Scene 1: Multi-Branch Encoding (100 frames: 100-199)
-    - Scene 2: Cross-Attention (100 frames: 200-299) - was scene 3
-    - Scene 3: Ensemble Prediction (50 frames: 300-349) - was scene 4
-    - Scene 4: Ranked Output (100 frames: 350-449) - was scene 5
-    - Scene 5: 2D to 3D Transition (150 frames: 450-599) - was scene 6
-    - Scene 6: 2D to 3D Transition duplicate (100 frames: 600-699) - was scene 7
-    - Scene 7: 3D Protein Pocket Matching (100 frames: 700-799) - was scene 2, now at end (optional)
+    Args:
+        f: Frame number
+        include_pocket: If True, include scene 8 (Pocket Detection). Default: False.
+    
+    Returns:
+        Scene index (0-6 by default, 0-6 and 8 if include_pocket=True)
     """
-    if f < 200:
-        return f // SCENE_FRAMES  # Scenes 0-1: 100 frames each
-    elif f < 300:  # Scene 2 (Cross-Attention): 100 frames (200-299)
-        return 2
-    elif f < 350:  # Scene 3 (Ensemble): 50 frames (300-349)
-        return 3
-    elif f < 450:  # Scene 4 (Ranked): 100 frames (350-449)
-        return 4
-    elif f < 600:  # Scene 5 (2D to 3D): 150 frames (450-599)
-        return 5
-    elif f < 700:  # Scene 6 (2D to 3D duplicate): 100 frames (600-699)
-        return 6
-    elif include_scene8 and f < 800:  # Scene 7 (3D Protein Pocket Matching): 100 frames (700-799)
-        return 7
+    if not include_pocket:
+        # Default: scenes 0-6 (7 scenes, 700 frames)
+        s = f // SCENE_FRAMES
+        return min(s, 6)
     else:
-        # Should not reach here if FRAMES is set correctly
-        return 6  # Default to last scene
+        # With --include-pocket-detection: scenes 0-6, then scene 8 (8 scenes total, 800 frames)
+        # Frames 0-699: scenes 0-6, Frames 700-799: scene 8
+        s = f // SCENE_FRAMES
+        if s <= 6:
+            return s
+        elif s == 7:
+            return 8  # Skip scene 7, map to scene 8
+        else:
+            return 8  # Clamp to scene 8
 
-
-def local_t(f, include_scene8=False):
+def local_t(f, include_pocket=False):
     """0..1 within scene."""
-    s = scene_of_frame(f, include_scene8)
-    if s < 2:
-        # Scenes 0-1: normal duration (100 frames each)
-        scene_start = s * SCENE_FRAMES
-        local_frame = f - scene_start
-        return local_frame / (SCENE_FRAMES - 1) if SCENE_FRAMES > 1 else 0
-    elif s == 2:
-        # Scene 2 (Cross-Attention): 100 frames (200-299)
-        scene2_start = 200
-        scene2_frames = 100
-        local_frame = f - scene2_start
-        return local_frame / (scene2_frames - 1) if scene2_frames > 1 else 0
-    elif s == 3:
-        # Scene 3 (Ensemble): 50 frames (300-349)
-        scene3_start = 300
-        scene3_frames = 50
-        local_frame = f - scene3_start
-        return local_frame / (scene3_frames - 1) if scene3_frames > 1 else 0
-    elif s == 4:
-        # Scene 4 (Ranked): 100 frames (350-449)
-        scene4_start = 350
-        scene4_frames = 100
-        local_frame = f - scene4_start
-        return local_frame / (scene4_frames - 1) if scene4_frames > 1 else 0
-    elif s == 5:
-        # Scene 5 (2D to 3D): 150 frames (450-599)
-        scene5_start = 450
-        scene5_frames = 150
-        local_frame = f - scene5_start
-        return local_frame / (scene5_frames - 1) if scene5_frames > 1 else 0
-    elif s == 6:
-        # Scene 6 (2D to 3D duplicate): 100 frames (600-699)
-        scene6_start = 600
-        scene6_frames = 100
-        local_frame = f - scene6_start
-        return local_frame / (scene6_frames - 1) if scene6_frames > 1 else 0
-    else:
-        # Scene 7 (3D Protein Pocket Matching): 100 frames (700-799)
-        scene7_start = 700
-        scene7_frames = 100
-        local_frame = f - scene7_start
-        return local_frame / (scene7_frames - 1) if scene7_frames > 1 else 0
+    local_frame = f % SCENE_FRAMES
+    return local_frame / (SCENE_FRAMES - 1) if SCENE_FRAMES > 1 else 0
 
 
 def setup_ax():
@@ -1067,10 +1020,9 @@ def draw_3d_conformer(ax, cx, cy, theta, phi=0.3):
                           atom_scale=1.2, bond_width=2.5, alpha=0.9)
 
 
-def scene2(ax, t):
+def scene_encoding(ax, t):
     # Move title and subtitle up to avoid overlap with middle diagram
-    draw_title(ax, "Multi-Branch Encoding", "4 parallel branches: ChemBERTa, Ligand 3D, Protein Pocket, RDKit 2D", 
-               title_y=0.97, subtitle_y=0.91)
+    draw_title(ax, "Multi-Branch Encoding", "Encoding ligand in 3 complementary ways")
 
     # Load and display ligand image generated by HTS3D_ligandFigure.py
     # Input molecule on left - using generated ligand image
@@ -1437,7 +1389,7 @@ def scene2(ax, t):
 
 
 # -----------------------------
-# Scene 3: Pocket Detection
+# Scene 8: Pocket Detection (used by scene_pocket function)
 # -----------------------------
 def draw_residue(ax, x, y, res_type, size=25):
     """Draw a realistic amino acid residue."""
@@ -1535,9 +1487,9 @@ def draw_3d_protein_pocket_matching(ax, cx, cy, t, scale=1.0):
         grad_x, grad_y = to_cpu(grad_x), to_cpu(grad_y)
         ax.plot(grad_x, grad_y, color=(0.95, 0.8, 0.35), lw=1.0, alpha=grad_alpha, zorder=8)
     
-    # Draw ligand inside pocket (colored atoms) - use real RDKit 3D if available
-    if HAS_RDKIT:
-        try:
+    # Draw ligand inside pocket (colored atoms) - use real RDKit
+    try:
+        if HAS_RDKIT:
             mol = Chem.MolFromSmiles(DEFAULT_SMILES)
             if mol is not None:
                 mol_3d = Chem.AddHs(mol)
@@ -1587,55 +1539,12 @@ def draw_3d_protein_pocket_matching(ax, cx, cy, t, scale=1.0):
                                        view_angle_x=0.35, view_angle_y=0.25,  # Better viewing angle
                                        atom_scale=3.0 * scale, bond_width=3.0 * scale, alpha=0.95)
             else:
-                # Fallback to simple representation with enhanced 3D
-                ligand_atoms_3d = [
-                    [0.0, 0.0, -0.02 * scale], [0.02 * scale, 0.0, 0.0], [-0.02 * scale, 0.0, 0.0],
-                    [0.0, 0.02 * scale, 0.0], [0.0, -0.02 * scale, 0.0],
-                ]
-                ligand_bonds = [(0, 1), (0, 2), (0, 3), (0, 4)]
-                ligand_colors = [(0.4, 0.4, 0.4), (0.9, 0.2, 0.2), (0.2, 0.4, 0.9),
-                                (0.4, 0.4, 0.4), (0.2, 0.8, 0.2)]
-                # Enhanced rotation for better 3D visualization
-                lig_rot_y = 2 * np.pi * t * 0.4
-                lig_rot_z = 2 * np.pi * t * 0.3
-                rot_y = np.array([[np.cos(lig_rot_y), 0, np.sin(lig_rot_y)],
-                                  [0, 1, 0],
-                                  [-np.sin(lig_rot_y), 0, np.cos(lig_rot_y)]])
-                rot_z = np.array([[np.cos(lig_rot_z), -np.sin(lig_rot_z), 0],
-                                  [np.sin(lig_rot_z), np.cos(lig_rot_z), 0],
-                                  [0, 0, 1]])
-                ligand_atoms_3d = np.array(ligand_atoms_3d) @ rot_y.T @ rot_z.T
-                draw_ball_and_stick_3d(ax, cx, cy, ligand_atoms_3d.tolist(), ligand_bonds,
-                                       atom_colors=ligand_colors,
-                                       bond_color=(0.6, 0.9, 0.85),
-                                       view_angle_x=0.35, view_angle_y=0.25,
-                                       atom_scale=3.0 * scale, bond_width=3.0 * scale, alpha=0.95)
-        except:
-            # Fallback to simple representation with enhanced 3D
-            ligand_atoms_3d = [
-                [0.0, 0.0, -0.02 * scale], [0.02 * scale, 0.0, 0.0], [-0.02 * scale, 0.0, 0.0],
-                [0.0, 0.02 * scale, 0.0], [0.0, -0.02 * scale, 0.0],
-            ]
-            ligand_bonds = [(0, 1), (0, 2), (0, 3), (0, 4)]
-            ligand_colors = [(0.4, 0.4, 0.4), (0.9, 0.2, 0.2), (0.2, 0.4, 0.9),
-                            (0.4, 0.4, 0.4), (0.2, 0.8, 0.2)]
-            # Enhanced rotation for better 3D visualization
-            lig_rot_y = 2 * np.pi * t * 0.4
-            lig_rot_z = 2 * np.pi * t * 0.3
-            rot_y = np.array([[np.cos(lig_rot_y), 0, np.sin(lig_rot_y)],
-                              [0, 1, 0],
-                              [-np.sin(lig_rot_y), 0, np.cos(lig_rot_y)]])
-            rot_z = np.array([[np.cos(lig_rot_z), -np.sin(lig_rot_z), 0],
-                              [np.sin(lig_rot_z), np.cos(lig_rot_z), 0],
-                              [0, 0, 1]])
-            ligand_atoms_3d = np.array(ligand_atoms_3d) @ rot_y.T @ rot_z.T
-            draw_ball_and_stick_3d(ax, cx, cy, ligand_atoms_3d.tolist(), ligand_bonds,
-                                   atom_colors=ligand_colors,
-                                   bond_color=(0.6, 0.9, 0.85),
-                                   view_angle_x=0.35, view_angle_y=0.25,
-                                   atom_scale=3.0 * scale, bond_width=3.0 * scale, alpha=0.95)
-    else:
+                raise ValueError("Mol creation failed")
+        else:
+            raise ValueError("RDKit not available")
+    except Exception as e:
         # Fallback to simple representation with enhanced 3D
+        # print(f"RDKit ligand rendering failed: {e}. Using fallback.") # Uncomment for debugging
         ligand_atoms_3d = [
             [0.0, 0.0, -0.02 * scale], [0.02 * scale, 0.0, 0.0], [-0.02 * scale, 0.0, 0.0],
             [0.0, 0.02 * scale, 0.0], [0.0, -0.02 * scale, 0.0],
@@ -1722,9 +1631,10 @@ def draw_3d_protein_pocket_matching(ax, cx, cy, t, scale=1.0):
     ax.text(cx + 0.10 * scale, cy, "CHARGED\nRESIDUES", 
             color=(0.9, 0.5, 0.5), fontsize=10 * scale, ha="center", 
             fontweight="bold", alpha=0.8, zorder=20)
-
-
-def scene3(ax, t):
+# -----------------------------
+# Scene 8: 3D Protein Pocket Matching (Optional - only included with --include-pocket-detection)
+# -----------------------------
+def scene_pocket(ax, t):
     draw_title(ax, "3D Protein Pocket Matching", "Ligand binding in detected pocket with residue interactions")
 
     # Main 3D pocket matching diagram (center) - smaller and lower
@@ -1772,7 +1682,7 @@ def scene3(ax, t):
 # -----------------------------
 # Scene 4: Cross-Attention
 # -----------------------------
-def scene4(ax, t):
+def scene_attention(ax, t):
     draw_title(ax, "Cross-Attention", "Ligand features attend to pocket residues")
 
     # More realistic ligand structure (left) - show actual molecular features
@@ -2178,7 +2088,7 @@ def _draw_synthetic_3d_ligand(ax, cx, cy, theta, phi, scale, alpha_val):
                           alpha=alpha_val * 0.95)
 
 
-def scene5(ax, t):
+def scene_transition(ax, t):
     # Title centered horizontally in the frame (not left-aligned like other scenes)
     ax.text(0.50, 0.94, "HTS-3D: Inhibitor ligand binding in protein pocket", 
             color=FG, fontsize=28, fontweight="bold", va="top", ha="center")
@@ -2398,7 +2308,7 @@ def scene5(ax, t):
             draw_2d_structure_detailed(ax, cx_2d, cy_2d, scale=1.0, alpha_val=alpha_2d)
         
         # Keep 2D labels visible but dimmed
-        ax.text(0.20, 0.72, "2D (SOTA)", color=FG, fontsize=16, fontweight="bold", ha="center", alpha=alpha_2d)  # Moved with image
+        ax.text(0.20, 0.72, "2D (Prior Art)", color=FG, fontsize=16, fontweight="bold", ha="center", alpha=alpha_2d)  # Moved with image
         
         # Arrow pointing right (visible throughout) - extended to connect to further apart images
         draw_arrow(ax, 0.425, 0.50, 0.495, 0.50, alpha=0.6)  # Adjusted for new positions
@@ -2453,10 +2363,9 @@ def scene5(ax, t):
                style='italic', alpha=0.7)
         '''
 
+# Scene 6: SOTA Comparison (2D to 3D Transition)
 # -----------------------------
-# Scene 8: 2D to 3D Transition (Duplicate of Scene 7)
-# -----------------------------
-def scene8(ax, t):
+def scene_sota(ax, t):
     # Title centered horizontally in the frame (not left-aligned like other scenes)
     ax.text(0.50, 0.94, "HTS-3D vs 2D in the State of the Art (SOTA)", 
             color=FG, fontsize=28, fontweight="bold", va="top", ha="center")
@@ -2661,9 +2570,9 @@ def scene8(ax, t):
                style='italic', alpha=0.7)
         '''
 # -----------------------------
-# Scene 6: Ensemble Prediction
+# Scene 3: Ensemble Prediction
 # -----------------------------
-def scene6(ax, t):
+def scene_ensemble(ax, t):
     draw_title(ax, "Ensemble Prediction", "15 models (5 folds × 3 feature selection methods)")
 
     # Line 1: Draw three model blocks (top row) with feature selection labels
@@ -2709,9 +2618,9 @@ def scene6(ax, t):
 
 
 # -----------------------------
-# Scene 7: Output & Ranking
+# Scene 4: Output & Ranking
 # -----------------------------
-def scene7(ax, t):
+def scene_ranking(ax, t):
     draw_title(ax, "Ranked Output", "Binding affinity scores and top hits")
 
     # Simulated scores that "sort" over time
@@ -2811,32 +2720,32 @@ def scene7(ax, t):
 def draw_scene(ax, scene_idx, t):
     """Draw the appropriate scene based on scene index.
     
-    New scene order:
+    Scene order:
     - 0: Inputs (scene1)
-    - 1: Multi-Branch Encoding (scene2)
-    - 2: Cross-Attention (scene4) - was scene 3
-    - 3: Ensemble Prediction (scene6) - was scene 4
-    - 4: Ranked Output (scene7) - was scene 5
-    - 5: 2D to 3D Transition (scene5) - was scene 6
-    - 6: 2D to 3D Transition duplicate (scene8) - was scene 7
-    - 7: 3D Protein Pocket Matching (scene3) - was scene 2, now at end
+    - 1: Multi-Branch Encoding (scene_encoding)
+    - 2: Cross-Attention (scene_attention)
+    - 3: Ensemble Prediction (scene_ensemble)
+    - 4: Ranked Output (scene_ranking)
+    - 5: 2D to 3D Transition (scene_transition)
+    - 6: SOTA Comparison (scene_sota)
+    - 8: 3D Protein Pocket Matching (scene_pocket) - Optional, only included with --include-pocket-detection
     """
     if scene_idx == 0:
         scene1(ax, t)
     elif scene_idx == 1:
-        scene2(ax, t)
+        scene_encoding(ax, t)
     elif scene_idx == 2:
-        scene4(ax, t)  # Cross-Attention scene (was scene 3)
+        scene_attention(ax, t)
     elif scene_idx == 3:
-        scene6(ax, t)  # Ensemble prediction (was scene 4)
+        scene_ensemble(ax, t)
     elif scene_idx == 4:
-        scene7(ax, t)  # Output ranking (was scene 5)
+        scene_ranking(ax, t)
     elif scene_idx == 5:
-        scene5(ax, t)  # 2D to 3D transition scene (was scene 6)
+        scene_transition(ax, t)
     elif scene_idx == 6:
-        scene8(ax, t)  # 2D to 3D transition scene duplicate (was scene 7)
-    elif scene_idx == 7:
-        scene3(ax, t)  # 3D Protein Pocket Matching (was scene 2, now at end)
+        scene_sota(ax, t)
+    elif scene_idx == 8:
+        scene_pocket(ax, t)  # Optional scene - only included with --include-pocket-detection
     else:
         ax.text(0.5, 0.5, "Unknown scene", color=FG, ha="center", va="center")
 
@@ -2844,66 +2753,59 @@ def draw_scene(ax, scene_idx, t):
 def main():
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description='Generate HTS-3D explainer video animation')
-    parser.add_argument('--include-scene8', action='store_true',
-                        help='Include scene 8 (3D Protein Pocket Matching) at the end. Default: only generate first 7 scenes.')
+    parser.add_argument('--include-pocket-detection', action='store_true',
+                        help='Include the optional Pocket Detection scene (scene 8) at the end. Default: only generate scenes 0-6 (7 scenes total).')
     args = parser.parse_args()
     
-    include_scene8 = args.include_scene8
+    include_pocket = args.include_pocket_detection
     
-    # Set total frames based on whether scene 8 is included
-    total_frames = 800 if include_scene8 else 700
-    num_scenes = 8 if include_scene8 else 7
+    # Set total frames based on whether Pocket Detection is included
+    # Default: 7 scenes (0-6) = 700 frames. With --include-pocket-detection: 8 scenes (0-6, 8) = 800 frames
+    total_frames = 800 if include_pocket else 700
+    num_scenes = 8 if include_pocket else 7
     
     # Load subtitles
     subtitles = parse_srt_from_docx(SUBTITLE_PATH)
     print(f"Loaded {len(subtitles)} subtitles")
-    if include_scene8:
-        print("Generating all 8 scenes (including 3D Protein Pocket Matching at the end)")
+    if include_pocket:
+        print("Generating 8 scenes (0-6, 8) including Pocket Detection (scene 8) at the end")
     else:
-        print("Generating first 7 scenes only (use --include-scene8 to add 3D Protein Pocket Matching)")
+        print("Generating 7 scenes (0-6) by default. Use --include-pocket-detection to add scene 8 (Pocket Detection)")
     
     writer = imageio.get_writer(OUT_PATH, fps=FPS, codec="libx264", quality=8)
     try:
         for f in range(total_frames):
-            s = scene_of_frame(f, include_scene8)
-            t = local_t(f, include_scene8)
+            s = scene_of_frame(f, include_pocket)
+            t = local_t(f, include_pocket)
             time_seconds = f / FPS  # Current time in seconds
             
             fig, ax = setup_ax()
             draw_scene(ax, s, t)
             
-            # Add subtitle if available
-            # Override for Scene 1: use first caption for entire scene
-            if s == 0:  # Scene 1 (Inputs)
+            # Subtitle logic based on scene index (s)
+            if s == 0:  # Scene 0: Inputs
                 if len(subtitles) > 0:
-                    subtitle_text = subtitles[0]['text']  # Use first subtitle for entire scene 1
+                    subtitle_text = subtitles[0]['text']
                     draw_subtitle(ax, subtitle_text)
-            # Override for Scene 2 (Multi-Branch Encoding) with specific caption - smaller font
-            elif s == 1:  # Scene 2 (Multi-Branch Encoding)
+            elif s == 1:  # Scene 1: Multi-Branch Encoding
                 subtitle_text = "Each ligand is encoded in 3 complementary ways: chemical semantics using ChemBERTa, 2-D geometry using RDKit 2D features, and 3-D ligand conformers using RDKit 3D conformer generation."
-                draw_subtitle(ax, subtitle_text, fontsize=14)  # Reduced from 15 to 14
-            # Override for Scene 3 (Cross-Attention) - forced 2 lines
-            elif s == 2:  # Scene 3 (Cross-Attention) - was scene 4
+                draw_subtitle(ax, subtitle_text, fontsize=14)
+            elif s == 2:  # Scene 2: Cross-Attention
                 subtitle_text = "Cross-attention then links ligand features with pocket residues, \nallowing the model to focus on the most relevant molecular interactions."
                 draw_subtitle(ax, subtitle_text)
-            # Override for Scene 4 (Ensemble Prediction) - using "Multiple predictive models..." caption
-            elif s == 3:  # Scene 4 (Ensemble Prediction) - was scene 5
+            elif s == 3:  # Scene 3: Ensemble Prediction
                 subtitle_text = "Multiple predictive models evaluate each complex and their outputs are combined through an ensemble for robust scoring"
                 draw_subtitle(ax, subtitle_text)
-            # Override for Scene 5 (Ranked Output) - specific caption (forced two lines)
-            elif s == 4:  # Scene 5 (Ranked Output) - was scene 6
+            elif s == 4:  # Scene 4: Ranked Output
                 subtitle_text = "The result is a ranked list of compounds by predicted binding affinity, \nenabling rapid selection of top candidates for downstream validation."
                 draw_subtitle(ax, subtitle_text)
-            # Override for Scene 6 (2D to 3D Transition) with specific caption
-            elif s == 5:  # Scene 6 (2D to 3D Transition) - was scene 7
-                subtitle_text = "HTS-3D can screen millions of compounds in weeks, \n many times faster and cost-effective than prior art"
+            elif s == 5:  # Scene 5: 2D to 3D Transition
+                subtitle_text = "HTS-3D: Inhibitor ligand binding in protein pocket"
                 draw_subtitle(ax, subtitle_text)
-            # Override for Scene 7 (2D to 3D Transition duplicate) with specific caption
-            elif s == 6:  # Scene 7 (2D to 3D Transition duplicate) - was scene 8
+            elif s == 6:  # Scene 6: SOTA Comparison
                 subtitle_text = "World's 1st platform of HTS of compounds using 3D/4Branch matching,\n a breakthrough from current SOTA of 2D architecture"
                 draw_subtitle(ax, subtitle_text)
-            # Override for Scene 8 (3D Protein Pocket Matching) with specific caption (forced 2 lines)
-            elif s == 7:  # Scene 8 (3D Protein Pocket Matching) - was scene 2, now at end
+            elif s == 8:  # Scene 8: Pocket Detection (optional, only if --include-pocket-detection)
                 subtitle_text = "pocket detection: Uses geometric/concavity analysis to find cavities\nDruggability scoring: Each pocket scored 0-1 based on residue composition"
                 draw_subtitle(ax, subtitle_text)
             else:

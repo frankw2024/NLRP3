@@ -2274,6 +2274,747 @@ All three scripts implement comprehensive error handling:
 
 ---
 
+## 5. HTS3DOracle.py
+
+**Purpose**: Streamlit web application for evaluating and analyzing HTS-3D prediction results, and generating new predictions using trained HTS-3D models. Provides interactive visualization, metric calculation, comparison of prediction scores, and model-based prediction generation.
+
+**Features**:
+- **Analysis Mode**: Analyze existing prediction results from CSV files
+- **Prediction Mode**: Generate new predictions using trained HTS-3D models
+- **Command-Line Support**: `--model` and `--compound` arguments for model specification
+- **Auto Model Loading**: Automatically loads models from output directory or specified path
+- **Dual Compound Support**: Supports both NLRP3 and CD28 compound types
+
+### Command-Line Argument Parsing Flow
+
+```
+                    ┌─────┐
+                    │Start│
+                    └──┬──┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Parse Command-Line Arguments   │
+        │using argparse                 │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Parse Known Args Only         │
+        │(Streamlit adds its own)      │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Extract Arguments:            │
+        │- --model: Model file path    │
+        │- --compound: nlrp3 or cd28   │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Store in CLI_ARGS             │
+        │(Available throughout app)    │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+                      End
+```
+
+### Main Application Flow
+
+```
+                    ┌─────┐
+                    │Start│
+                    └──┬──┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Parse Command-Line Arguments   │
+        │--model, --compound            │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Initialize Streamlit App      │
+        │Set Page Config & Warnings    │
+        │Import HTS-3D Components       │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Display Title & Description   │
+        │"HTS-3D Results Evaluator     │
+        │ & Predictor"                 │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Sidebar Configuration         │
+        │- Mode Selector               │
+        │  (Analyze/Predict)           │
+        │- Hit threshold slider        │
+        │- Molecular properties toggle  │
+        │- Interactive plots toggle     │
+        │- Debug mode checkbox         │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+              ┌─────────────────┐
+              │  Mode Selected? │
+              └─────┬───────┬───┘
+                    │       │
+              ┌─────┘       └─────┐
+              │ Analyze           │ Predict
+              ▼                   ▼
+    ┌─────────────────┐   ┌──────────────┐
+    │Analysis Mode    │   │Prediction Mode│
+    │Flow (see below) │   │Flow (see     │
+    │                 │   │below)        │
+    └────────┬────────┘   └──────┬───────┘
+             │                   │
+             └───────────┬───────┘
+                         │
+                         ▼
+                    ┌────┘
+                    │End
+                    └────
+```
+
+### Analysis Mode Flow
+
+```
+        ┌──────────────────────────────┐
+        │Analysis Mode Selected         │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │File Uploader                 │
+        │Upload CSV with predictions   │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+              ┌─────────────────┐
+              │ File Uploaded?  │
+              └─────┬───────┬───┘
+                    │       │
+              ┌─────┘       └─────┐
+              │ No                │ Yes
+              ▼                   ▼
+    ┌─────────────────┐   ┌──────────────┐
+    │Show Info Message│   │Load CSV File │
+    │"Upload CSV..."  │   │to DataFrame  │
+    └────────┬────────┘   └──────┬───────┘
+             │                   │
+             │                   ▼
+             │          ┌──────────────┐
+             │          │Identify       │
+             │          │Columns:       │
+             │          │- Score cols  │
+             │          │- Label col   │
+             │          │- SMILES col  │
+             │          └──────┬───────┘
+             │                 │
+             │                 ▼
+             │      ┌──────────────────────┐
+             │      │Display Dataset        │
+             │      │Overview Metrics       │
+             │      └──────┬───────────────┘
+             │             │
+             │             ▼
+             │     ┌──────────────┐
+             │     │Score Analysis│
+             │     │Section       │
+             │     └──────┬───────┘
+             │            │
+             │            ▼
+             │    ┌──────────────┐
+             │    │Molecular      │
+             │    │Properties     │
+             │    │Analysis       │
+             │    └──────┬───────┘
+             │           │
+             │           ▼
+             │   ┌──────────────┐
+             │   │Detailed      │
+             │   │Results Table  │
+             │   └──────┬───────┘
+             │          │
+             │          ▼
+             │  ┌──────────────┐
+             │  │Download      │
+             │  │Results CSV   │
+             │  └──────┬───────┘
+             │         │
+             └─────────┴───┐
+                           │
+                           ▼
+                      ┌────┘
+                      │End
+                      └────
+```
+
+### Prediction Mode Flow
+
+```
+        ┌──────────────────────────────┐
+        │Prediction Mode Selected       │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Model Selection Section       │
+        │(in Sidebar)                  │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Handle Command-Line Args      │
+        │- Check --model path          │
+        │- Check --compound type       │
+        │- Resolve relative paths      │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Determine Model Path          │
+        │- Use CLI model if provided   │
+        │- Else find latest model      │
+        │  from output directory       │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+              ┌─────────────────┐
+              │ Model Found?    │
+              └─────┬───────┬───┘
+                    │       │
+              ┌─────┘       └─────┐
+              │ No                │ Yes
+              ▼                   ▼
+    ┌─────────────────┐   ┌──────────────┐
+    │Show Warning     │   │Check Session │
+    │"Model not found"│   │State for     │
+    │                 │   │Loaded Model  │
+    └────────┬────────┘   └──────┬───────┘
+             │                   │
+             │                   ▼
+             │          ┌──────────────┐
+             │          │Model Already  │
+             │          │Loaded?       │
+             │          └─────┬───────┬─┘
+             │                │       │
+             │          ┌─────┘       └─────┐
+             │          │ No                 │ Yes
+             │          ▼                    ▼
+             │  ┌─────────────────┐   ┌──────────────┐
+             │  │Auto-Load from   │   │Use Loaded    │
+             │  │CLI (if --model) │   │Model         │
+             │  │or Show Load     │   └──────┬───────┘
+             │  │Button           │          │
+             │  └──────┬──────────┘          │
+             │         │                     │
+             │         └──────────┬──────────┘
+             │                    │
+             │                    ▼
+             │         ┌──────────────────────┐
+             │         │File Uploader         │
+             │         │Upload CSV with SMILES │
+             │         └──────┬───────────────┘
+             │                │
+             │                ▼
+             │       ┌─────────────────┐
+             │       │ File Uploaded?  │
+             │       └─────┬───────┬───┘
+             │             │       │
+             │       ┌─────┘       └─────┐
+             │       │ No                │ Yes
+             │       ▼                   ▼
+             │┌─────────────────┐   ┌──────────────┐
+             ││Show Info Message│   │Load CSV File  │
+             ││"Upload CSV..."  │   │Extract SMILES │
+             │└────────┬────────┘   └──────┬───────┘
+             │         │                   │
+             │         │                   ▼
+             │         │          ┌──────────────┐
+             │         │          │Model Loaded?  │
+             │         │          └─────┬───────┬─┘
+             │         │                │       │
+             │         │          ┌─────┘       └─────┐
+             │         │          │ No                │ Yes
+             │         │          ▼                    ▼
+             │         │  ┌─────────────────┐   ┌──────────────┐
+             │         │  │Show Warning     │   │Generate      │
+             │         │  │"Load model..."  │   │Predictions   │
+             │         │  └────────┬────────┘   │using Model   │
+             │         │           │            └──────┬───────┘
+             │         │           │                   │
+             │         │           │                   ▼
+             │         │           │          ┌──────────────┐
+             │         │           │          │Add Predictions│
+             │         │           │          │to DataFrame: │
+             │         │           │          │- hts3d_score │
+             │         │           │          │- predicted_hit│
+             │         │           │          └──────┬───────┘
+             │         │           │                 │
+             │         │           │                 ▼
+             │         │           │        ┌──────────────┐
+             │         │           │        │Display       │
+             │         │           │        │Prediction    │
+             │         │           │        │Summary       │
+             │         │           │        └──────┬───────┘
+             │         │           │              │
+             │         │           │              ▼
+             │         │           │     ┌──────────────┐
+             │         │           │     │Switch to     │
+             │         │           │     │Analysis Mode │
+             │         │           │     │for Results   │
+             │         │           │     └──────┬───────┘
+             │         │           │            │
+             │         └──────────┴────────────┴───┐
+             │                                      │
+             │                                      ▼
+             │                                 ┌────┘
+             │                                 │End
+             │                                 └────
+```
+
+### Model Loading Flow
+
+### Model Loading Flow
+
+```
+        ┌──────────────────────────────┐
+        │Model Loading Requested       │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Get Model Path                │
+        │- From CLI_ARGS.model         │
+        │- Or find_latest_model()      │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Resolve Model Path            │
+        │- Check absolute path         │
+        │- Try relative to project root│
+        │- Try relative to script dir  │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+              ┌─────────────────┐
+              │ Path Exists?    │
+              └─────┬───────┬───┘
+                    │       │
+              ┌─────┘       └─────┐
+              │ No                │ Yes
+              ▼                   ▼
+    ┌─────────────────┐   ┌──────────────┐
+    │Return None      │   │Create Model  │
+    │Show Error       │   │Architecture  │
+    └────────┬────────┘   │HTS3DModel    │
+             │            └──────┬───────┘
+             │                   │
+             │                   ▼
+             │          ┌──────────────┐
+             │          │Load State    │
+             │          │Dict from .pt │
+             │          │File          │
+             │          └──────┬───────┘
+             │                 │
+             │                 ▼
+             │      ┌──────────────────────┐
+             │      │Load Weights into     │
+             │      │Model                 │
+             │      └──────┬───────────────┘
+             │             │
+             │             ▼
+             │     ┌──────────────┐
+             │     │Set Model to  │
+             │     │Eval Mode     │
+             │     └──────┬───────┘
+             │            │
+             │            ▼
+             │   ┌──────────────┐
+             │   │Store in      │
+             │   │Session State │
+             │   └──────┬───────┘
+             │          │
+             │          ▼
+             │  ┌──────────────┐
+             │  │Return Model  │
+             │  └──────┬───────┘
+             │         │
+             └─────────┴───┐
+                           │
+                           ▼
+                      ┌────┘
+                      │End
+                      └────
+```
+
+### Prediction Generation Flow
+
+```
+        ┌──────────────────────────────┐
+        │SMILES List & Model Ready     │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Tokenize SMILES               │
+        │- Use prepare_tensors()       │
+        │- Generate input_ids &        │
+        │  attention_mask              │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Generate RDKit 2D Features    │
+        │- build_rdkit_feature_matrix()│
+        │- Scale with GPUScaler        │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Generate 3D Conformer Features│
+        │- build_3d_cache()            │
+        │- Extract atom features &     │
+        │  masks                       │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Create HTS3DDataset           │
+        │- Combine all features        │
+        │- Create dummy labels         │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Create DataLoader             │
+        │- Batch size: 8               │
+        │- Shuffle: False              │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │For Each Batch:               │
+        │- Move to device (GPU/CPU)    │
+        │- Forward pass through model  │
+        │- Get logits                  │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Apply Sigmoid to Logits       │
+        │Convert to Probabilities      │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Collect All Predictions       │
+        │Return as NumPy Array         │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+                      End
+```
+
+### Data Loading and Column Identification Flow
+
+```
+        ┌──────────────────────────────┐
+        │CSV File Uploaded             │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Save to Temporary File        │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Read CSV with pandas          │
+        │df = pd.read_csv()            │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Identify Score Columns        │
+        │Check: hts3d_score,          │
+        │Prediction_Score, *_score     │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Identify Label Column         │
+        │Check: label, Label,          │
+        │ground_truth, activity        │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Identify SMILES Column        │
+        │Check: canonical_smiles,      │
+        │SMILES, Smiles, smiles        │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Display Column Info           │
+        │- Total compounds             │
+        │- Score columns found         │
+        │- Label distribution          │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+                      End
+```
+
+### Score Analysis Flow
+
+```
+        ┌──────────────────────────────┐
+        │For Each Score Column         │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Calculate Summary Statistics  │
+        │- Mean, Median, Std Dev      │
+        │- Predicted hits (≥threshold) │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Create Score Distribution     │
+        │Histogram with threshold line │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+              ┌─────────────────┐
+              │Labels Available?│
+              └─────┬───────┬───┘
+                    │       │
+              ┌─────┘       └─────┐
+              │ No                │ Yes
+              ▼                   ▼
+    ┌─────────────────┐   ┌──────────────┐
+    │Skip Metrics     │   │Calculate     │
+    │                 │   │Metrics:      │
+    │                 │   │- AUC-ROC     │
+    │                 │   │- AP          │
+    │                 │   │- Precision   │
+    │                 │   │- Recall      │
+    │                 │   │- F1-Score    │
+    │                 │   │- Confusion   │
+    │                 │   │  Matrix      │
+    └────────┬────────┘   └──────┬───────┘
+             │                   │
+             │                   ▼
+             │          ┌──────────────┐
+             │          │Display       │
+             │          │Metrics Table │
+             │          └──────┬───────┘
+             │                 │
+             │                 ▼
+             │      ┌──────────────────────┐
+             │      │Visualize Confusion   │
+             │      │Matrix Heatmap        │
+             │      └──────┬───────────────┘
+             │             │
+             └─────────────┴───┐
+                               │
+                               ▼
+        ┌──────────────────────────────┐
+        │Multiple Score Columns?       │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+              ┌─────────────────┐
+              │  Yes            │
+              └─────┬───────────┘
+                    │
+                    ▼
+        ┌──────────────────────────────┐
+        │Create Comparison             │
+        │Visualizations:               │
+        │- Score distributions         │
+        │- Correlation scatter        │
+        │- ROC curves                 │
+        │- Score vs ground truth       │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Calculate Correlation Matrix  │
+        │Between Score Columns         │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Display Comparison Table      │
+        │with Stats & Metrics          │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+                      End
+```
+
+### Molecular Properties Analysis Flow
+
+```
+        ┌──────────────────────────────┐
+        │Molecular Properties Enabled? │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+              ┌─────────────────┐
+              │  Yes            │
+              └─────┬───────────┘
+                    │
+                    ▼
+        ┌──────────────────────────────┐
+        │Extract SMILES List           │
+        │from DataFrame                │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │For Each SMILES:              │
+        │- Parse with RDKit            │
+        │- Calculate Properties:        │
+        │  * MolWt, LogP, TPSA         │
+        │  * HBA, HBD                  │
+        │  * RotatableBonds             │
+        │  * AromaticRings              │
+        │  * QED                       │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Create Properties DataFrame   │
+        │Merge with Original Data      │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Identify Hits vs Non-Hits     │
+        │Based on Score Threshold      │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │Create Property Visualizations:│
+        │- MolWt Distribution           │
+        │- LogP Distribution            │
+        │- QED Distribution             │
+        │- Score vs QED Scatter         │
+        └──────────────┬───────────────┘
+                       │
+                       ▼
+                      End
+```
+
+### Function: calculate_metrics()
+
+```
+    ┌─────────────────────────┐
+    │Start: calculate_metrics │
+    │(y_true, y_pred,         │
+    │ threshold=0.5)          │
+    └───────────┬─────────────┘
+                │
+                ▼
+    ┌─────────────────────────┐
+    │Convert Predictions to   │
+    │Binary (≥threshold)      │
+    └───────────┬─────────────┘
+                │
+                ▼
+    ┌─────────────────────────┐
+    │Try: Calculate AUC-ROC   │
+    │(with exception handling)│
+    └───────────┬─────────────┘
+                │
+                ▼
+    ┌─────────────────────────┐
+    │Try: Calculate Average   │
+    │Precision                │
+    └───────────┬─────────────┘
+                │
+                ▼
+    ┌─────────────────────────┐
+    │Try: Calculate Precision │
+    │Recall, F1-Score         │
+    └───────────┬─────────────┘
+                │
+                ▼
+    ┌─────────────────────────┐
+    │Calculate Confusion     │
+    │Matrix & Extract:        │
+    │- TP, TN, FP, FN         │
+    └───────────┬─────────────┘
+                │
+                ▼
+    ┌─────────────────────────┐
+    │Return Metrics Dictionary │
+    └───────────┬─────────────┘
+                │
+                ▼
+               End
+```
+
+### Function: create_comparison_visualizations()
+
+```
+    ┌─────────────────────────┐
+    │Start: create_comparison │
+    │_visualizations(df,      │
+    │ score_cols, label_col)  │
+    └───────────┬─────────────┘
+                │
+                ▼
+    ┌─────────────────────────┐
+    │Determine Subplot Layout │
+    │(with/without labels)    │
+    └───────────┬─────────────┘
+                │
+                ▼
+    ┌─────────────────────────┐
+    │Create Plotly Subplots   │
+    │- Distribution comparison │
+    │- Correlation scatter     │
+    │- ROC curves (if labels)  │
+    │- Score vs ground truth   │
+    └───────────┬─────────────┘
+                │
+                ▼
+    ┌─────────────────────────┐
+    │Add Traces for Each      │
+    │Score Column             │
+    └───────────┬─────────────┘
+                │
+                ▼
+    ┌─────────────────────────┐
+    │Update Layout & Axes      │
+    │Labels                    │
+    └───────────┬─────────────┘
+                │
+                ▼
+    ┌─────────────────────────┐
+    │Return Figure Object      │
+    └───────────┬─────────────┘
+                │
+                ▼
+               End
+```
+
+---
+
 ## Notes
 
 - All flowcharts use text-based ASCII art and can be viewed in any text editor or terminal
@@ -2282,3 +3023,8 @@ All three scripts implement comprehensive error handling:
 - The ensemble model in HTS.py uses cross-validation with multiple feature selection methods for robust predictions
 - HTS_3D.py uses GPU-accelerated feature processing and implements comprehensive NaN/Inf checks throughout training
 - HTS_3D.py now supports multi-pocket detection on arbitrary protein structures, testing multiple viable binding pockets simultaneously
+- HTS3DOracle.py is a Streamlit web application that provides interactive visualization and analysis of HTS-3D prediction results, with support for comparing multiple score columns and analyzing molecular properties
+- HTS3DOracle.py supports dual-mode operation: Analysis Mode (for analyzing existing predictions) and Prediction Mode (for generating new predictions using trained HTS-3D models)
+- HTS3DOracle.py supports command-line arguments (`--model` and `--compound`) for specifying model files and compound types, enabling automated workflows and batch processing
+- HTS3DOracle.py automatically loads models from the output directory (hts3d_model_nlrp3.pt or hts3d_model_cd28.pt) or from a user-specified path via `--model` argument
+- HTS3DOracle.py auto-detects compound type from model filenames and CSV filenames, reducing manual configuration requirements

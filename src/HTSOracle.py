@@ -15,6 +15,21 @@ from rdkit import Chem
 # Get script directory and project root
 SCRIPT_DIR = Path(__file__).parent.resolve()
 PROJECT_ROOT = SCRIPT_DIR.parent.resolve()
+
+# Register HTS classes for joblib/pickle (ensemble model may contain GPUScaler, etc.)
+import sys
+sys.path.insert(0, str(SCRIPT_DIR))
+
+
+def _register_hts_classes_for_pickle():
+    """Register HTS classes in __main__ so joblib.load can unpickle ensemble models."""
+    try:
+        import HTS as _hts_module
+        for _name in ("GPUScaler", "ImprovedCombinedModel", "MolecularDataset"):
+            if hasattr(_hts_module, _name):
+                setattr(sys.modules["__main__"], _name, getattr(_hts_module, _name))
+    except ImportError:
+        pass
 from rdkit.Chem import AllChem, MACCSkeys, Descriptors, Lipinski, QED
 from rdkit.Chem import GetSSSR
 from sklearn.metrics import roc_auc_score, average_precision_score
@@ -700,6 +715,7 @@ def run_app():
     try:
         if os.path.exists(model_path):
             with st.spinner(f"Loading model from {model_path}..."):
+                _register_hts_classes_for_pickle()
                 ensemble_model = joblib.load(model_path)
                 model_loaded = True
                 st.success(f"✅ Successfully loaded model from {model_path}")
